@@ -17,6 +17,10 @@
   let activeTarget = "A";
   let currentPosition = null;
   let watchId = null;
+  let mapMode = "north";
+  let compassHeading = null;
+  let compassListening = false;
+  let lastOrientationAt = 0;
   let deferredInstallPrompt = null;
 
   const newId = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -72,6 +76,42 @@
   function stopLocationWatch() {
     if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
     watchId = null;
+  }
+
+  function stopCompassWatch() {
+    if (!compassListening) return;
+    window.removeEventListener("deviceorientation", updateCompassHeading);
+    window.removeEventListener("deviceorientationabsolute", updateCompassHeading);
+    compassListening = false;
+  }
+
+  async function enableCompass() {
+    const orientationEvent = window.DeviceOrientationEvent;
+    if (orientationEvent && typeof orientationEvent.requestPermission === "function") {
+      const permission = await orientationEvent.requestPermission();
+      if (permission !== "granted") throw new Error("Compass permission was denied.");
+    }
+    if (!compassListening) {
+      window.addEventListener("deviceorientation", updateCompassHeading);
+      window.addEventListener("deviceorientationabsolute", updateCompassHeading);
+      compassListening = true;
+    }
+  }
+
+  function updateCompassHeading(event) {
+    const timestamp = Date.now();
+    if (timestamp - lastOrientationAt < 80) return;
+    let heading;
+    if (Number.isFinite(event.webkitCompassHeading)) {
+      heading = event.webkitCompassHeading;
+    } else if (event.absolute && Number.isFinite(event.alpha)) {
+      heading = 360 - event.alpha + (screen.orientation?.angle || 0);
+    } else {
+      return;
+    }
+    lastOrientationAt = timestamp;
+    compassHeading = normalizeAzimuth(heading);
+    updateFieldMap();
   }
 
   function ensureLocationWatch() {
@@ -138,6 +178,7 @@
     stopLocationWatch();
     const project = selectedProject();
     if (!project) {
+      stopCompassWatch();
       activeProjectId = null;
       activeSiteId = null;
       activeStationId = null;
@@ -149,9 +190,9 @@
       renderSurvey(project, selectedSite(), station);
       ensureLocationWatch();
     } else {
+      stopCompassWatch();
       activeStationId = null;
-      if (!selectedSite()) renderProject(project);
-      else renderProject(project);
+      renderProject(project);
     }
   }
 
@@ -179,6 +220,10 @@
       </section>`}`;
   }
 
+  function backButton(label, action) {
+    return `<div class="screen-back"><button class="back-button" data-action="${action}"><span aria-hidden="true">←</span> ${escapeHtml(label)}</button></div>`;
+  }
+
   function renderProject(project) {
     const siteCards = project.sites.map((site, index) => {
       const collapsed = collapsedSiteIds.has(site.id);
@@ -204,7 +249,7 @@
     </article>`;
     }).join("");
 
-    app.innerHTML = `<div class="crumb"><button data-action="home">All projects</button><span class="crumb-sep">/</span><span>${escapeHtml(project.name)}</span></div>
+    app.innerHTML = `${backButton("All projects", "back")}
       <section class="page-heading">
         <div><div class="eyebrow">FIELD PROJECT</div><h1 class="page-title">${escapeHtml(project.name)}</h1>
           <div class="project-meta">PROJECT ID · ${escapeHtml(project.id)}</div></div>
@@ -212,6 +257,7 @@
           <button class="button button-outline button-small" data-action="rename-project">Rename</button>
           <button class="button button-outline button-small" data-action="export-csv">Export CSV</button>
           <button class="button button-primary button-small" data-action="share-project">Share / sync</button>
+          <button class="button button-danger button-small" data-action="delete-project">Delete project</button>
         </div>
       </section>
       <section><div class="section-head"><h2>Survey sites <span class="project-meta">(${project.sites.length})</span></h2>
@@ -229,15 +275,15 @@
       ? `${formatCoord(midpoint.lat)}, ${formatCoord(midpoint.lon)}`
       : "Midpoint not set";
     const pointMarkup = points.length ? points.map((point) => `<div class="point-item">
-      <div class="point-item-top"><strong>POINT ${escapeHtml(point.target)}</strong><span>${new Date(point.capturedAt).toLocaleString()}</span></div>
+      <div class="point-item-top"><strong>POINT ${escapeHtml(point.target)}</strong><span>${new Date(point.capturedAt).toLocaleString()}</span><button class="point-delete" data-action="delete-point" data-id="${escapeHtml(point.id)}" aria-label="Delete point ${escapeHtml(point.target)} recorded ${new Date(point.capturedAt).toLocaleString()}" title="Delete point">×</button></div>
       <div class="point-item-detail">${formatCoord(point.lat)}, ${formatCoord(point.lon)} · ${point.distanceMeters == null ? "—" : `${point.distanceMeters.toFixed(1)} m`} · ${point.bearingDegrees == null ? "—" : `${point.bearingDegrees.toFixed(1)}°`}</div>
     </div>`).join("") : `<div class="inline-empty">No survey points captured yet.</div>`;
-    app.innerHTML = `<div class="crumb"><button data-action="home">All projects</button><span class="crumb-sep">/</span>
-      <button data-action="open-project" data-id="${escapeHtml(project.id)}">${escapeHtml(project.name)}</button><span class="crumb-sep">/</span><span>${escapeHtml(site.name)}</span></div>
+    app.innerHTML = `${backButton(`Back to ${project.name}`, "back")}
       <section class="survey-header">
         <div><div class="eyebrow">${escapeHtml(site.name)} / SURVEY STATION</div><h1 class="survey-title">${escapeHtml(station.name)}</h1>
           <div class="survey-target">Target azimuth · A <strong>${normalizeAzimuth(station.targets.A).toFixed(1)}°</strong> &nbsp; B <strong>${normalizeAzimuth(station.targets.B).toFixed(1)}°</strong></div></div>
-        <button class="button button-outline button-small" data-action="rename-station">✎ Rename station</button>
+        <div class="survey-actions"><button class="button button-outline button-small" data-action="rename-station">✎ Rename station</button>
+          <button class="button button-danger button-small" data-action="delete-station">Delete station</button></div>
       </section>
       <section class="survey-layout">
         <div class="readout-panel">
@@ -256,6 +302,7 @@
           <button class="button button-lime capture-button" id="capture-button" data-action="capture-point" disabled>◎ &nbsp; Record point for ${activeTarget}</button>
         </div>
         <aside class="side-panel">
+          ${renderDirectionMap(station)}
           <section class="data-card"><h3>Station midpoint</h3>
             <div class="coordinate-row"><span>Coordinates</span><span>${midpointText}</span></div>
             <div class="coordinate-row"><span>Accuracy</span><span>${midpoint?.accuracy == null ? "—" : `${midpoint.accuracy.toFixed(1)} m`}</span></div>
@@ -266,6 +313,157 @@
         </aside>
       </section>`;
     updateLiveReadout();
+  }
+
+  function renderDirectionMap(station) {
+    return `<section class="map-card">
+      <div class="map-card-header">
+        <div><span class="map-kicker">LOCAL FIELD MAP</span><h3>Position &amp; target directions</h3></div>
+        <span class="map-compass-status" id="compass-status">North up</span>
+      </div>
+      <div class="map-controls" role="group" aria-label="Map orientation">
+        <button class="map-mode-button ${mapMode === "north" ? "active" : ""}" data-action="set-map-mode" data-mode="north" aria-pressed="${mapMode === "north"}">North up</button>
+        <button class="map-mode-button ${mapMode === "follow" ? "active" : ""}" data-action="set-map-mode" data-mode="follow" aria-pressed="${mapMode === "follow"}">Follow compass</button>
+      </div>
+      <div class="direction-map" role="img" aria-label="Diagram showing your position relative to the VES station midpoint and target azimuths">
+        <svg viewBox="0 0 300 300" aria-hidden="true">
+          <defs>
+            <clipPath id="map-plot-clip"><rect x="40" y="20" width="240" height="240" rx="2"></rect></clipPath>
+            <marker id="map-arrow-a" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L9 4.5L0 9z" class="map-arrow-a-head"></path></marker>
+            <marker id="map-arrow-b" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L9 4.5L0 9z" class="map-arrow-b-head"></path></marker>
+          </defs>
+          <rect class="map-background" x="40" y="20" width="240" height="240" rx="2"></rect>
+          <g id="map-rotating-layer" clip-path="url(#map-plot-clip)">
+            <g id="map-grid"></g>
+            <g id="map-bearing-layer">
+              <line id="map-target-a" class="map-target-ray" x1="160" y1="140" x2="160" y2="25" marker-end="url(#map-arrow-a)"></line>
+              <line id="map-target-b" class="map-target-ray" x1="160" y1="140" x2="160" y2="25" marker-end="url(#map-arrow-b)"></line>
+              <g id="map-recorded-points"></g>
+              <line id="map-position-trail" class="map-position-trail" x1="160" y1="140" x2="160" y2="140"></line>
+              <circle id="map-current-position" class="map-current-position" cx="160" cy="140" r="6" hidden></circle>
+            </g>
+            <g class="map-north-needle">
+              <path d="M160 22l-4 10 4-3 4 3z"></path>
+            </g>
+          </g>
+          <rect class="map-border" x="40" y="20" width="240" height="240" rx="2"></rect>
+          <circle class="map-midpoint" cx="160" cy="140" r="5"></circle>
+          <text class="map-axis-label map-north-label" x="160" y="14" text-anchor="middle" id="map-north-label">N</text>
+          <g id="map-axis-labels">
+            <text class="map-axis-label" x="286" y="263" text-anchor="end">E</text>
+            <text class="map-axis-unit" x="160" y="292" text-anchor="middle">EASTING FROM MIDPOINT · m</text>
+            <text class="map-axis-unit" x="12" y="140" text-anchor="middle" transform="rotate(-90 12 140)">NORTHING · m</text>
+          </g>
+          <g id="map-axis-ticks"></g>
+        </svg>
+      </div>
+      <div class="map-scale"><span id="map-grid-spacing">Grid · —</span><span class="map-scale-bar"><i id="map-scale-line"></i></span><span id="map-scale-label">± — m</span></div>
+      <div class="map-legend">
+        <span><i class="legend-midpoint"></i>Midpoint</span>
+        <span class="${activeTarget === "A" ? "selected" : ""}"><i class="legend-target-a"></i>A direction</span>
+        <span class="${activeTarget === "B" ? "selected" : ""}"><i class="legend-target-b"></i>B direction</span>
+        <span><i class="legend-recorded"></i>Recorded points</span>
+        <span><i class="legend-current"></i>Your position</span>
+      </div>
+      <div class="map-summary" id="map-summary">Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north</div>
+    </section>`;
+  }
+
+  function updateFieldMap() {
+    const station = selectedStation();
+    const rotatingLayer = document.getElementById("map-rotating-layer");
+    if (!station || !rotatingLayer) return;
+    const point = station.midpoint && currentPosition ? distanceAndBearing(station.midpoint, currentPosition) : null;
+    const recordedPoints = station.midpoint
+      ? station.points.map((savedPoint) => ({ point: savedPoint, measure: distanceAndBearing(station.midpoint, savedPoint) }))
+      : [];
+    const farthestDistance = recordedPoints.reduce(
+      (farthest, savedPoint) => Math.max(farthest, savedPoint.measure.distance),
+      point?.distance || 0
+    );
+    const niceCeiling = (value) => {
+      const magnitude = 10 ** Math.floor(Math.log10(Math.max(value, 1)));
+      const normalized = value / magnitude;
+      const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+      return nice * magnitude;
+    };
+    const extentMeters = niceCeiling(Math.max(farthestDistance * 1.2, 20));
+    const gridStepMeters = niceCeiling(extentMeters / 3);
+    const centerX = 160;
+    const centerY = 140;
+    const plotHalf = 116;
+    const pixelsPerMeter = plotHalf / extentMeters;
+    const layerRotation = mapMode === "follow" && compassHeading !== null ? -compassHeading : 0;
+    rotatingLayer.setAttribute("transform", `rotate(${layerRotation} ${centerX} ${centerY})`);
+    const northLabel = document.getElementById("map-north-label");
+    northLabel.setAttribute("transform", `rotate(${layerRotation} ${centerX} ${centerY})`);
+    document.getElementById("map-axis-labels").setAttribute("transform", `rotate(${layerRotation} ${centerX} ${centerY})`);
+    document.getElementById("map-axis-ticks").setAttribute("transform", `rotate(${layerRotation} ${centerX} ${centerY})`);
+    const gridLines = [];
+    const axisTicks = [];
+    const gridCount = Math.floor(extentMeters / gridStepMeters);
+    for (let index = -gridCount; index <= gridCount; index += 1) {
+      const offset = index * gridStepMeters;
+      const x = centerX + offset * pixelsPerMeter;
+      const y = centerY - offset * pixelsPerMeter;
+      const isAxis = offset === 0;
+      gridLines.push(`<line class="${isAxis ? "map-grid-axis" : "map-grid-line"}" x1="${x}" y1="24" x2="${x}" y2="256"></line>`);
+      gridLines.push(`<line class="${isAxis ? "map-grid-axis" : "map-grid-line"}" x1="44" y1="${y}" x2="276" y2="${y}"></line>`);
+      const label = offset === 0 ? "0" : `${offset > 0 ? "+" : ""}${Number(offset.toPrecision(3))}`;
+      axisTicks.push(`<text class="map-tick-label" x="${x}" y="271" text-anchor="middle">${label}</text>`);
+      axisTicks.push(`<text class="map-tick-label" x="36" y="${y + 3}" text-anchor="end">${label}</text>`);
+    }
+    document.getElementById("map-grid").innerHTML = gridLines.join("");
+    document.getElementById("map-axis-ticks").innerHTML = axisTicks.join("");
+    const targetA = normalizeAzimuth(station.targets.A);
+    const targetB = normalizeAzimuth(station.targets.B);
+    const setRay = (id, bearing, target) => {
+      const radians = bearing * Math.PI / 180;
+      const east = Math.sin(radians);
+      const north = Math.cos(radians);
+      const rayLength = plotHalf / Math.max(Math.abs(east), Math.abs(north));
+      const line = document.getElementById(id);
+      line.setAttribute("x2", String(centerX + east * rayLength));
+      line.setAttribute("y2", String(centerY - north * rayLength));
+      line.classList.toggle("selected", activeTarget === target);
+    };
+    setRay("map-target-a", targetA, "A");
+    setRay("map-target-b", targetB, "B");
+    const recordedMarkup = recordedPoints.map(({ point: savedPoint, measure }) => {
+      const radians = measure.bearing * Math.PI / 180;
+      const x = centerX + Math.sin(radians) * measure.distance * pixelsPerMeter;
+      const y = centerY - Math.cos(radians) * measure.distance * pixelsPerMeter;
+      return `<circle class="map-recorded-point map-recorded-${savedPoint.target.toLowerCase()}" cx="${x}" cy="${y}" r="4"><title>Recorded target ${savedPoint.target} · ${measure.distance.toFixed(1)} m · ${measure.bearing.toFixed(1)}°</title></circle>`;
+    }).join("");
+    document.getElementById("map-recorded-points").innerHTML = recordedMarkup;
+    const position = document.getElementById("map-current-position");
+    const trail = document.getElementById("map-position-trail");
+    if (point) {
+      const radians = point.bearing * Math.PI / 180;
+      const x = centerX + Math.sin(radians) * point.distance * pixelsPerMeter;
+      const y = centerY - Math.cos(radians) * point.distance * pixelsPerMeter;
+      position.setAttribute("cx", String(x));
+      position.setAttribute("cy", String(y));
+      position.removeAttribute("hidden");
+      trail.setAttribute("x2", String(x));
+      trail.setAttribute("y2", String(y));
+      trail.removeAttribute("hidden");
+    } else {
+      position.setAttribute("hidden", "");
+      trail.setAttribute("hidden", "");
+    }
+    document.getElementById("map-grid-spacing").textContent = `Grid ${gridStepMeters} m`;
+    document.getElementById("map-scale-label").textContent = `±${extentMeters} m`;
+    const svgWidth = document.querySelector(".direction-map svg").getBoundingClientRect().width;
+    document.getElementById("map-scale-line").style.width = `${gridStepMeters * pixelsPerMeter * svgWidth / 300}px`;
+    document.getElementById("map-summary").textContent = point
+      ? `You are ${point.distance.toFixed(1)} m away · ${point.bearing.toFixed(1)}° from midpoint · Target ${activeTarget} ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}°`
+      : station.midpoint ? `Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north · Waiting for GPS`
+        : `Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north · Set midpoint to plot position`;
+    const compassStatus = document.getElementById("compass-status");
+    if (mapMode === "north") compassStatus.textContent = "North up";
+    else if (compassHeading === null) compassStatus.textContent = "Waiting for compass";
+    else compassStatus.textContent = `Heading ${compassHeading.toFixed(0)}°`;
   }
 
   function updateLiveReadout(errorMessage = "") {
@@ -282,6 +480,7 @@
       hint.textContent = errorMessage;
       retry.hidden = !navigator.geolocation;
       capture.disabled = true;
+      updateFieldMap();
       return;
     }
     if (!currentPosition) {
@@ -290,6 +489,7 @@
       status.classList.add("waiting");
       retry.hidden = true;
       capture.disabled = true;
+      updateFieldMap();
       return;
     }
     positionEl.textContent = `${formatCoord(currentPosition.lat)}, ${formatCoord(currentPosition.lon)}`;
@@ -304,20 +504,21 @@
     const measure = station?.midpoint ? distanceAndBearing(station.midpoint, currentPosition) : null;
     document.getElementById("current-distance").textContent = measure ? `${measure.distance.toFixed(1)} m` : "Set midpoint";
     document.getElementById("current-azimuth").textContent = measure ? `${measure.bearing.toFixed(1)}°` : "—";
+    updateFieldMap();
   }
 
-  function openModal({ title, description = "", fields, submitLabel = "Save" }) {
+  function openModal({ title, description = "", fields, submitLabel = "Save", danger = false }) {
     const backdrop = document.createElement("div");
     backdrop.className = "modal-backdrop";
     backdrop.innerHTML = `<form class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <h2 id="modal-title">${escapeHtml(title)}</h2>${description ? `<p>${escapeHtml(description)}</p>` : ""}
       ${fields.map((field) => `<div class="field"><label for="field-${escapeHtml(field.name)}">${escapeHtml(field.label)}</label>
         <input id="field-${escapeHtml(field.name)}" name="${escapeHtml(field.name)}" type="${field.type || "text"}" value="${escapeHtml(field.value ?? "")}" ${field.required ? "required" : ""} ${field.min !== undefined ? `min="${field.min}"` : ""} ${field.max !== undefined ? `max="${field.max}"` : ""} ${field.step ? `step="${field.step}"` : ""} ${field.autofocus ? "autofocus" : ""}></div>`).join("")}
-      <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">${escapeHtml(submitLabel)}</button></div>
+      <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-modal">Cancel</button><button class="button ${danger ? "button-danger" : "button-primary"}" type="submit">${escapeHtml(submitLabel)}</button></div>
     </form>`;
     document.body.append(backdrop);
     const form = backdrop.querySelector("form");
-    form.querySelector("[autofocus]")?.focus();
+    (form.querySelector("[autofocus]") || form.querySelector('[type="submit"]'))?.focus();
     return new Promise((resolve) => {
       const close = (value) => { backdrop.remove(); resolve(value); };
       backdrop.addEventListener("click", (event) => {
@@ -392,6 +593,85 @@
     render();
   }
 
+  async function deleteProject() {
+    const project = selectedProject();
+    const confirmed = await openModal({
+      title: "Delete this project?",
+      description: `“${project.name}” and all of its sites, stations, and recorded points will be permanently deleted from this device.`,
+      fields: [],
+      submitLabel: "Delete project",
+      danger: true
+    });
+    if (!confirmed) return;
+    projects = projects.filter((item) => item.id !== project.id);
+    activeProjectId = null;
+    activeSiteId = null;
+    activeStationId = null;
+    await persist();
+    render();
+    showToast("Project deleted from this device.");
+  }
+
+  async function deleteStation() {
+    const project = selectedProject();
+    const site = selectedSite();
+    const station = selectedStation();
+    const confirmed = await openModal({
+      title: "Delete this station?",
+      description: `“${station.name}”, its midpoint, and all ${station.points.length} recorded point${station.points.length === 1 ? "" : "s"} will be permanently deleted.`,
+      fields: [],
+      submitLabel: "Delete station",
+      danger: true
+    });
+    if (!confirmed) return;
+    site.stations = site.stations.filter((item) => item.id !== station.id);
+    site.updatedAt = now();
+    project.updatedAt = now();
+    activeStationId = null;
+    currentPosition = null;
+    await persist();
+    render();
+    showToast("Station deleted.");
+  }
+
+  async function deletePoint(pointId) {
+    const project = selectedProject();
+    const station = selectedStation();
+    const point = station.points.find((item) => item.id === pointId);
+    if (!point) return;
+    const confirmed = await openModal({
+      title: "Delete this recorded point?",
+      description: `Target ${point.target} · ${formatCoord(point.lat)}, ${formatCoord(point.lon)} · ${new Date(point.capturedAt).toLocaleString()}. This point will be permanently deleted.`,
+      fields: [],
+      submitLabel: "Delete point",
+      danger: true
+    });
+    if (!confirmed) return;
+    station.points = station.points.filter((item) => item.id !== pointId);
+    station.updatedAt = now();
+    project.updatedAt = now();
+    await persist();
+    render();
+    showToast("Recorded point deleted.");
+  }
+
+  async function setMapMode(mode) {
+    if (mode === "north") {
+      mapMode = "north";
+      stopCompassWatch();
+    } else {
+      mapMode = "follow";
+      try {
+        await enableCompass();
+      } catch (error) {
+        mapMode = "north";
+        renderSurvey(selectedProject(), selectedSite(), selectedStation());
+        throw error;
+      }
+    }
+    renderSurvey(selectedProject(), selectedSite(), selectedStation());
+  }
+
   async function editStation() {
     const station = selectedStation();
     const values = await openModal({ title: "Station settings", fields: [
@@ -464,8 +744,11 @@
     const link = document.createElement("a");
     link.href = url;
     link.download = name;
+    link.style.display = "none";
+    document.body.append(link);
     link.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 
   function exportCsv() {
@@ -493,17 +776,34 @@
 
   async function shareProject() {
     const project = selectedProject();
-    const file = new File([exportProjectJson(project)], `${safeFilename(project.name)}.vesproject.json`, { type: "application/json" });
-    if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+    const fileName = `${safeFilename(project.name)}.vesproject.json`;
+    const content = exportProjectJson(project);
+    const downloadBackup = () => downloadFile(fileName, content, "application/json");
+    if (navigator.share && typeof File !== "undefined") {
       try {
+        const file = new File([content], fileName, { type: "application/json" });
+        if (navigator.canShare && !navigator.canShare({ files: [file] })) {
+          downloadBackup();
+          showToast("File sharing is not supported here. Project file downloaded instead.");
+          return;
+        }
         await navigator.share({ title: `VES Field — ${project.name}`, text: `Project ID: ${project.id}`, files: [file] });
         showToast("Project shared. Import the file on the other device to merge.");
       } catch (error) {
-        if (error.name !== "AbortError") showToast(`Could not share project: ${error.message}`, true);
+        if (error.name === "AbortError") {
+          showToast("Sharing cancelled. Your project was not changed.");
+          return;
+        }
+        try {
+          downloadBackup();
+          showToast(`Sharing was blocked (${error.message || "permission denied"}). Project file downloaded instead.`);
+        } catch (downloadError) {
+          showToast(`Sharing failed: ${error.message}. Download also failed: ${downloadError.message}.`, true);
+        }
       }
       return;
     }
-    downloadFile(file.name, await file.text(), "application/json");
+    downloadBackup();
     showToast("Project file downloaded. Send it to the other device and import it there.");
   }
 
@@ -597,12 +897,25 @@
     try {
       if (action === "new-project") await createProject();
       else if (action === "home") { activeProjectId = null; activeSiteId = null; activeStationId = null; render(); }
+      else if (action === "back") {
+        if (activeStationId) {
+          activeStationId = null;
+          currentPosition = null;
+        } else {
+          activeProjectId = null;
+          activeSiteId = null;
+        }
+        render();
+      }
       else if (action === "open-project") { activeProjectId = target.dataset.id; activeSiteId = null; activeStationId = null; render(); }
       else if (action === "new-site") await createSite();
       else if (action === "new-station") await createStation(target.dataset.id);
       else if (action === "rename-project") await renameEntity(selectedProject(), "project");
+      else if (action === "delete-project") await deleteProject();
       else if (action === "rename-site") { event.stopPropagation(); const site = selectedProject().sites.find((item) => item.id === target.dataset.id); await renameEntity(site, "site"); }
       else if (action === "rename-station") await renameEntity(selectedStation(), "station");
+      else if (action === "delete-station") await deleteStation();
+      else if (action === "delete-point") await deletePoint(target.dataset.id);
       else if (action === "toggle-site") {
         if (collapsedSiteIds.has(target.dataset.id)) collapsedSiteIds.delete(target.dataset.id);
         else collapsedSiteIds.add(target.dataset.id);
@@ -610,6 +923,7 @@
       }
       else if (action === "open-station") { activeSiteId = target.dataset.siteId; activeStationId = target.dataset.id; currentPosition = null; activeTarget = "A"; render(); }
       else if (action === "select-target") { activeTarget = target.dataset.target; renderSurvey(selectedProject(), selectedSite(), selectedStation()); ensureLocationWatch(); }
+      else if (action === "set-map-mode") await setMapMode(target.dataset.mode);
       else if (action === "set-midpoint") await setMidpoint();
       else if (action === "capture-point") await capturePoint();
       else if (action === "retry-location") {
@@ -642,6 +956,9 @@
 
   window.addEventListener("online", updateConnectionStatus);
   window.addEventListener("offline", updateConnectionStatus);
+  window.addEventListener("resize", () => {
+    if (selectedStation()) updateFieldMap();
+  });
 
   function updateConnectionStatus() {
     document.getElementById("connection-status").innerHTML = `<span class="status-dot"></span> ${navigator.onLine ? "Online · data stays local" : "Offline ready"}`;
