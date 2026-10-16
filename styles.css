@@ -111,6 +111,13 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .station-setup-alert { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin: -4px 0 18px; padding: 16px 18px; border: 1px solid #c8d6f7; border-radius: 10px; background: #f2f6ff; }
 .station-setup-alert h2 { margin: 0 0 4px; color: var(--green); font-size: 14px; }
 .station-setup-alert p { margin: 0; color: #53627c; font-size: 11px; line-height: 1.5; }
+.gps-operation-status { display: flex; align-items: center; gap: 9px; margin: 12px 0; color: #d6e1f5; font-size: 11px; }
+.gps-operation-status::before { width: 13px; height: 13px; flex: 0 0 13px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; content: ""; animation: gps-spin .8s linear infinite; }
+.data-card .gps-operation-status { color: var(--green-2); }
+.station-coordinate-action { width: 100%; margin-top: 13px; }
+.station-browser-card, .station-browser-points { margin-bottom: 14px; }
+.station-browser-points .point-list { max-height: none; }
+@keyframes gps-spin { to { transform: rotate(360deg); } }
 .field-checkbox { margin-top: 5px; }
 .modal .field-checkbox label { display: flex; align-items: flex-start; gap: 8px; color: var(--ink); font: 12px/1.5 var(--sans); letter-spacing: 0; cursor: pointer; }
 .modal .field-checkbox input { width: 16px; height: 16px; min-height: 0; flex: 0 0 16px; margin: 1px 0 0; padding: 0; border: 0; border-radius: 0; background: transparent; accent-color: var(--green-2); }
