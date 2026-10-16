@@ -21,6 +21,7 @@
   let compassHeading = null;
   let compassListening = false;
   let compassNeedsPermission = false;
+  let compassPermissionAttempted = false;
   let compassError = "";
   let lastOrientationAt = 0;
   let deferredInstallPrompt = null;
@@ -85,13 +86,31 @@
   }
 
   function startCompassWatch() {
+    if (compassListening || compassPermissionAttempted) return;
     const orientationEvent = window.DeviceOrientationEvent;
     if (orientationEvent && typeof orientationEvent.requestPermission === "function") {
+      compassPermissionAttempted = true;
       compassNeedsPermission = true;
       compassError = "";
       updateFieldMap();
+      Promise.resolve().then(() => orientationEvent.requestPermission()).then((permission) => {
+        if (!selectedStation()) return;
+        if (permission === "granted") {
+          compassNeedsPermission = false;
+          attachCompassListeners();
+        } else {
+          compassNeedsPermission = false;
+          compassError = "Compass permission was denied.";
+        }
+        updateFieldMap();
+      }).catch((error) => {
+        if (!selectedStation()) return;
+        compassError = error.name === "NotAllowedError" ? "" : "Compass is unavailable.";
+        updateFieldMap();
+      });
       return;
     }
+    compassPermissionAttempted = true;
     compassNeedsPermission = false;
     compassError = "";
     attachCompassListeners();
@@ -102,8 +121,14 @@
     const orientationEvent = window.DeviceOrientationEvent;
     if (orientationEvent && typeof orientationEvent.requestPermission === "function") {
       const permission = await orientationEvent.requestPermission();
-      if (permission !== "granted") throw new Error("Compass permission was denied.");
+      if (permission !== "granted") {
+        compassNeedsPermission = false;
+        compassError = "Compass permission was denied.";
+        updateFieldMap();
+        return;
+      }
     }
+    compassPermissionAttempted = true;
     compassNeedsPermission = false;
     compassError = "";
     attachCompassListeners();
@@ -201,6 +226,7 @@
       stopCompassWatch();
       compassHeading = null;
       compassNeedsPermission = false;
+      compassPermissionAttempted = false;
       compassError = "";
       activeProjectId = null;
       activeSiteId = null;
@@ -217,6 +243,7 @@
       stopCompassWatch();
       compassHeading = null;
       compassNeedsPermission = false;
+      compassPermissionAttempted = false;
       compassError = "";
       activeStationId = null;
       renderProject(project);
@@ -379,7 +406,10 @@
           <circle class="map-midpoint" cx="160" cy="140" r="5"></circle>
           <g class="map-target-compass">
             <circle cx="252" cy="53" r="22"></circle>
-            <text x="252" y="36" text-anchor="middle" class="target-compass-north">N</text>
+            <path class="target-compass-forward" d="M252 28L248 35L256 35Z"></path>
+            <g id="map-compass-north-marker">
+              <text id="map-compass-north-label" x="252" y="37" text-anchor="middle" class="target-compass-north">N</text>
+            </g>
             <g id="map-target-compass-arrow">
               <path class="target-compass-arrow" d="M252 40L247 57L252 54L257 57Z"></path>
             </g>
@@ -466,9 +496,18 @@
     setRay("map-target-a", targetA, "A");
     setRay("map-target-b", targetB, "B");
     const selectedBearing = activeTarget === "A" ? targetA : targetB;
+    const headingOffset = compassHeading ?? 0;
+    document.getElementById("map-compass-north-marker").setAttribute(
+      "transform",
+      `rotate(${-headingOffset} 252 53)`
+    );
+    document.getElementById("map-compass-north-label").setAttribute(
+      "transform",
+      `rotate(${headingOffset} 252 37)`
+    );
     document.getElementById("map-target-compass-arrow").setAttribute(
       "transform",
-      `rotate(${selectedBearing} 252 53)`
+      `rotate(${selectedBearing - headingOffset} 252 53)`
     );
     document.querySelector(".target-compass-arrow").classList.toggle("target-b", activeTarget === "B");
     document.getElementById("map-target-compass-label").textContent = `${activeTarget} · ${selectedBearing.toFixed(0)}°`;

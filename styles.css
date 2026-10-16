@@ -155,6 +155,7 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .map-north-needle { fill: #0052f5; }
 .map-midpoint { fill: #20a45a; stroke: white; stroke-width: 2; }
 .map-target-compass circle { fill: #fff; stroke: #b9c5d8; stroke-width: 1; }
+.target-compass-forward { fill: #0052f5; }
 .target-compass-north { fill: #68758a; font: 600 7px var(--mono); }
 .target-compass-arrow { fill: #00bfe8; }
 .target-compass-arrow.target-b { fill: #d51ab8; }
