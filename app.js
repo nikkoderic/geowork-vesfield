@@ -14,6 +14,7 @@
   let activeProjectId = null;
   let activeSiteId = null;
   let activeStationId = null;
+  let showingBrowse = false;
   const collapsedSiteIds = new Set();
   let activeTarget = "A";
   let currentPosition = null;
@@ -174,7 +175,7 @@
   }
 
   function ensureLocationWatch() {
-    if (watchId !== null || !selectedStation()) return;
+    if (watchId !== null) return;
     if (!navigator.geolocation) {
       updateLiveReadout("Location is not supported by this browser.");
       return;
@@ -236,36 +237,32 @@
   function render() {
     stopLocationWatch();
     const project = selectedProject();
-    if (!project) {
+    if (showingBrowse && !project) {
       stopCompassWatch();
       compassHeading = null;
       compassHeadingAbsolute = true;
       compassNeedsPermission = false;
       compassPermissionAttempted = false;
       compassError = "";
-      lastAbsoluteOrientationAt = 0;
-      activeProjectId = null;
       activeSiteId = null;
       activeStationId = null;
       renderProjects();
       return;
     }
     const station = selectedStation();
-    if (station) {
-      renderSurvey(project, selectedSite(), station);
-      ensureLocationWatch();
-      startCompassWatch();
-    } else {
+    if (showingBrowse && project && !station) {
       stopCompassWatch();
       compassHeading = null;
       compassHeadingAbsolute = true;
       compassNeedsPermission = false;
       compassPermissionAttempted = false;
       compassError = "";
-      lastAbsoluteOrientationAt = 0;
-      activeStationId = null;
       renderProject(project);
+      return;
     }
+    renderSurvey(project || null, selectedSite() || null, station || null);
+    ensureLocationWatch();
+    startCompassWatch();
   }
 
   function renderProjects() {
@@ -278,7 +275,8 @@
         <div class="project-card-bottom"><span>Updated ${new Date(project.updatedAt).toLocaleDateString()}</span><span class="project-arrow">↗</span></div>
       </article>`;
     }).join("");
-    app.innerHTML = `<section class="page-heading">
+    app.innerHTML = `${backButton("Back to acquisition", "capture-home")}
+      <section class="page-heading">
       <div><div class="eyebrow">FIELDWORK / PROJECTS</div><h1 class="page-title">Your field book.</h1>
         <p class="page-intro">Organize VES stations, capture GPS positions, and keep working when you’re off the grid.</p></div>
       <button class="button button-primary" data-action="new-project">＋ New project</button>
@@ -313,9 +311,9 @@
       </div>
       ${collapsed ? "" : site.stations.length ? `<div class="station-list">${site.stations.map((station) => {
         const pointCount = station.points.length;
-        const midpoint = station.midpoint ? `${formatCoord(station.midpoint.lat)}, ${formatCoord(station.midpoint.lon)}` : "Midpoint not set";
+        const coordinates = station.midpoint ? `${formatCoord(station.midpoint.lat)}, ${formatCoord(station.midpoint.lon)}` : "Station coordinates not set";
         return `<div class="station-row" data-action="open-station" data-site-id="${escapeHtml(site.id)}" data-id="${escapeHtml(station.id)}" tabindex="0" role="button">
-          <div><div class="station-name">${escapeHtml(station.name)}</div><div class="station-sub">${midpoint} · ${pointCount} point${pointCount === 1 ? "" : "s"} recorded</div></div><span class="station-arrow">→</span>
+          <div><div class="station-name">${escapeHtml(station.name)}</div><div class="station-sub">${coordinates} · ${pointCount} point${pointCount === 1 ? "" : "s"} recorded</div></div><span class="station-arrow">→</span>
         </div>`;
       }).join("")}</div>` : `<div class="inline-empty">No stations yet. Add the first VES station for this site.</div>`}
     </article>`;
@@ -327,7 +325,7 @@
           <div class="project-meta">PROJECT ID · ${escapeHtml(project.id)}</div></div>
         <div class="toolbar-row">
           <button class="button button-outline button-small" data-action="rename-project">Rename</button>
-          <button class="button button-outline button-small" data-action="export-csv">Export CSV</button>
+            <button class="button button-outline button-small" data-action="export-csv">Export CSV</button>
           <button class="button button-primary button-small" data-action="share-project">Share / sync</button>
           <button class="button button-danger button-small" data-action="delete-project">Delete project</button>
         </div>
@@ -340,49 +338,76 @@
   }
 
   function renderSurvey(project, site, station) {
-    const targetValue = station.targets[activeTarget];
-    const midpoint = station.midpoint;
-    const points = [...station.points].sort((a, b) => b.capturedAt.localeCompare(a.capturedAt));
-    const midpointText = midpoint
-      ? `${formatCoord(midpoint.lat)}, ${formatCoord(midpoint.lon)}`
-      : "Midpoint not set";
+    const captureView = !showingBrowse;
+    const targetValue = station?.targets[activeTarget];
+    const stationCoordinates = station?.midpoint;
+    const points = station ? [...station.points].sort((a, b) => b.capturedAt.localeCompare(a.capturedAt)) : [];
+    const stationCoordinatesText = stationCoordinates
+      ? `${formatCoord(stationCoordinates.lat)}, ${formatCoord(stationCoordinates.lon)}`
+      : "Not set";
     const pointMarkup = points.length ? points.map((point) => `<div class="point-item">
       <div class="point-item-top"><strong class="point-target-${point.target.toLowerCase()}">POINT ${escapeHtml(point.target)}</strong><span>${new Date(point.capturedAt).toLocaleString()}</span><button class="point-delete" data-action="delete-point" data-id="${escapeHtml(point.id)}" aria-label="Delete point ${escapeHtml(point.target)} recorded ${new Date(point.capturedAt).toLocaleString()}" title="Delete point">×</button></div>
       <div class="point-item-detail">${formatCoord(point.lat)}, ${formatCoord(point.lon)} · ${point.distanceMeters == null ? "—" : `${point.distanceMeters.toFixed(1)} m`} · ${point.bearingDegrees == null ? "—" : `${point.bearingDegrees.toFixed(1)}°`}</div>
     </div>`).join("") : `<div class="inline-empty">No survey points captured yet.</div>`;
-    app.innerHTML = `${backButton(`Back to ${project.name}`, "back")}
-      <section class="survey-header">
-        <div><div class="eyebrow">${escapeHtml(site.name)} / SURVEY STATION</div><h1 class="survey-title">${escapeHtml(station.name)}</h1>
-          <div class="survey-target">Target azimuth · A <strong>${normalizeAzimuth(station.targets.A).toFixed(1)}°</strong> &nbsp; B <strong>${normalizeAzimuth(station.targets.B).toFixed(1)}°</strong></div></div>
-        <div class="survey-actions"><button class="button button-outline button-small" data-action="rename-station">✎ Rename station</button>
-          <button class="button button-danger button-small" data-action="delete-station">Delete station</button></div>
+    const projectOptions = projects.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === activeProjectId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
+    const siteOptions = (selectedProject()?.sites || []).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === activeSiteId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
+    const stationOptions = (selectedSite()?.stations || []).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === activeStationId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
+    const captureSelector = captureView ? `<section class="acquisition-selector" aria-label="Choose survey station">
+        <div class="selector-grid">
+          <label class="selector-field"><span>PROJECT</span><select data-select="project" aria-label="Project"><option value="">Choose project</option>${projectOptions}</select></label>
+          <label class="selector-field"><span>SITE</span><select data-select="site" aria-label="Site" ${activeProjectId ? "" : "disabled"}><option value="">Choose site</option>${siteOptions}</select></label>
+          <label class="selector-field"><span>STATION</span><select data-select="station" aria-label="Station" ${activeSiteId ? "" : "disabled"}><option value="">Choose station</option>${stationOptions}</select></label>
+        </div>
+        <div class="selector-actions">
+          <button class="button button-outline button-small" data-action="new-project">＋ Project</button>
+          <button class="button button-outline button-small" data-action="new-site" ${activeProjectId ? "" : "disabled"}>＋ Site</button>
+          <button class="button button-outline button-small" data-action="quick-new-station" ${activeSiteId ? "" : "disabled"}>＋ Station</button>
+        </div>
+      </section>` : backButton(`Back to ${project.name}`, "back");
+    const stationHeading = station ? `${escapeHtml(project.name)} / ${escapeHtml(site.name)} / ${escapeHtml(station.name)}` : "No station selected";
+    const acquisitionIntro = station
+      ? `${escapeHtml(station.name)} · Target A ${normalizeAzimuth(station.targets.A).toFixed(1)}° · B ${normalizeAzimuth(station.targets.B).toFixed(1)}°`
+      : "Your live GPS position appears here. Choose a station to calculate distance and azimuth or record a point.";
+    app.innerHTML = `${captureView ? `<div class="acquisition-topline"><button class="back-button" data-action="browse"><span aria-hidden="true">☷</span> Browse records</button><span class="acquisition-context">${stationHeading}</span></div>` : ""}
+      ${captureSelector}
+      <section class="survey-header acquisition-heading">
+        <div><div class="eyebrow">${station ? "POINT ACQUISITION" : "GPS POSITION"}</div><h1 class="survey-title">${station ? escapeHtml(station.name) : "Current position"}</h1>
+          <div class="survey-target">${acquisitionIntro}</div></div>
+        ${!captureView ? `<div class="survey-actions"><button class="button button-outline button-small" data-action="rename-station">✎ Rename station</button>
+          <button class="button button-danger button-small" data-action="delete-station">Delete station</button></div>` : ""}
       </section>
-      <section class="survey-layout">
+      ${station && !stationCoordinates ? `<section class="station-setup-alert" aria-labelledby="station-setup-title">
+        <div><h2 id="station-setup-title">Set station coordinates first</h2>
+          <p>These coordinates are the reference for distance, azimuth, and point capture.</p></div>
+        <button class="button button-primary" data-action="set-station-coordinates">◎ Use current GPS position</button>
+      </section>` : ""}
+      <section class="survey-layout ${station ? "" : "position-layout"}">
         <div class="readout-panel">
           <div class="readout-top"><span>LIVE GPS READOUT</span><span class="gps-state waiting" id="gps-state"><span class="status-dot"></span><span id="gps-state-label">Finding GPS…</span></span></div>
-          <div class="readout-grid">
+          <div class="readout-grid ${station ? "" : "position-only"}">
             <div class="readout-cell"><span class="readout-label">Current position</span><span class="readout-value" id="current-position">—</span></div>
-            <div class="readout-cell"><span class="readout-label">Distance from midpoint</span><span class="readout-value large" id="current-distance">—</span></div>
-            <div class="readout-cell"><span class="readout-label">Current azimuth</span><span class="readout-value" id="current-azimuth">—</span></div>
-            <div class="readout-cell"><span class="readout-label">Target azimuth · <span id="target-label">${activeTarget}</span></span><span class="readout-value large" id="target-azimuth">${normalizeAzimuth(targetValue).toFixed(1)}°</span></div>
+            ${station ? `<div class="readout-cell"><span class="readout-label">Distance from station</span><span class="readout-value large" id="current-distance">—</span></div>
+              <div class="readout-cell"><span class="readout-label">Current azimuth</span><span class="readout-value" id="current-azimuth">—</span></div>
+              <div class="readout-cell"><span class="readout-label">Target azimuth · <span id="target-label">${activeTarget}</span></span><span class="readout-value large" id="target-azimuth">${normalizeAzimuth(targetValue).toFixed(1)}°</span></div>` : `<div class="readout-cell"><span class="readout-label">GPS accuracy</span><span class="readout-value" id="gps-accuracy">—</span></div>`}
           </div>
           <div class="readout-hint"><span id="gps-hint">Keep this screen open for continuous GPS updates.</span><button id="gps-retry" class="button button-quiet button-small" data-action="retry-location" hidden>Retry GPS</button></div>
-          <div class="target-selectors" style="margin-top:13px">
-            <button class="target-chip target-chip-a ${activeTarget === "A" ? "active" : ""}" data-action="select-target" data-target="A">TARGET A</button>
-            <button class="target-chip target-chip-b ${activeTarget === "B" ? "active" : ""}" data-action="select-target" data-target="B">TARGET B</button>
-          </div>
-          <button class="button button-accent button-target-${activeTarget.toLowerCase()} capture-button" id="capture-button" data-action="capture-point" disabled>◎ &nbsp; Record point for ${activeTarget}</button>
+          ${station ? `<div class="target-selectors" style="margin-top:13px">
+              <button class="target-chip target-chip-a ${activeTarget === "A" ? "active" : ""}" data-action="select-target" data-target="A">TARGET A</button>
+              <button class="target-chip target-chip-b ${activeTarget === "B" ? "active" : ""}" data-action="select-target" data-target="B">TARGET B</button>
+            </div>
+            <button class="button button-accent button-target-${activeTarget.toLowerCase()} capture-button" id="capture-button" data-action="capture-point" disabled>◎ &nbsp; Record point for ${activeTarget}</button>`
+            : `<p class="capture-prompt">Select a station above to calculate station-relative readings and record a survey point.</p>`}
         </div>
-        <aside class="side-panel">
-          ${renderDirectionMap(station)}
-          <section class="data-card"><h3>Station midpoint</h3>
-            <div class="coordinate-row"><span>Coordinates</span><span>${midpointText}</span></div>
-            <div class="coordinate-row"><span>Accuracy</span><span>${midpoint?.accuracy == null ? "—" : `${midpoint.accuracy.toFixed(1)} m`}</span></div>
-            <button class="button button-outline button-small" style="margin-top:13px;width:100%" data-action="set-midpoint">${midpoint ? "Update midpoint from GPS" : "Set midpoint from GPS"}</button>
-            <button class="button button-outline button-small" style="margin-top:7px;width:100%" data-action="edit-station">Station settings</button>
-          </section>
-          <section class="data-card"><h3>Recorded points <span class="project-meta">(${points.length})</span></h3><div class="point-list">${pointMarkup}</div></section>
-        </aside>
+        ${station ? `<aside class="side-panel">
+            ${renderDirectionMap(station)}
+            <section class="data-card"><h3>Station coordinates</h3>
+              <div class="coordinate-row"><span>Coordinates</span><span>${stationCoordinatesText}</span></div>
+              <div class="coordinate-row"><span>GPS accuracy</span><span>${stationCoordinates?.accuracy == null ? "—" : `${stationCoordinates.accuracy.toFixed(1)} m`}</span></div>
+              ${stationCoordinates ? `<button class="button button-outline button-small" style="margin-top:13px;width:100%" data-action="set-station-coordinates">Update station coordinates</button>` : ""}
+              ${captureView ? "" : `<button class="button button-outline button-small" style="margin-top:7px;width:100%" data-action="edit-station">Station settings</button>`}
+            </section>
+            ${captureView ? "" : `<section class="data-card"><h3>Recorded points <span class="project-meta">(${points.length})</span></h3><div class="point-list">${pointMarkup}</div></section>`}
+          </aside>` : ""}
       </section>`;
     updateLiveReadout();
   }
@@ -396,7 +421,7 @@
           <button class="compass-enable" id="compass-enable" data-action="enable-compass" hidden>Enable compass</button>
         </div>
       </div>
-      <div class="direction-map" role="img" aria-label="Field map showing the midpoint, current position and heading, recorded points, and selected target direction">
+      <div class="direction-map" role="img" aria-label="Field map showing station coordinates, current position and heading, recorded points, and selected target direction">
         <svg viewBox="0 0 300 300" aria-hidden="true">
           <defs>
             <clipPath id="map-plot-clip"><rect x="40" y="20" width="240" height="240" rx="2"></rect></clipPath>
@@ -434,7 +459,7 @@
           <text class="map-axis-label map-north-label" x="160" y="14" text-anchor="middle" id="map-north-label">N</text>
           <g id="map-axis-labels">
             <text class="map-axis-label" x="286" y="263" text-anchor="end">E</text>
-            <text class="map-axis-unit" x="160" y="292" text-anchor="middle">EASTING FROM MIDPOINT · m</text>
+            <text class="map-axis-unit" x="160" y="292" text-anchor="middle">EASTING FROM STATION · m</text>
             <text class="map-axis-unit" x="12" y="140" text-anchor="middle" transform="rotate(-90 12 140)">NORTHING · m</text>
           </g>
           <g id="map-axis-ticks"></g>
@@ -442,7 +467,7 @@
       </div>
       <div class="map-scale"><span id="map-grid-spacing">Grid · —</span><span class="map-scale-bar"><i id="map-scale-line"></i></span><span id="map-scale-label">± — m</span></div>
       <div class="map-legend">
-        <span><i class="legend-midpoint"></i>Midpoint</span>
+        <span><i class="legend-midpoint"></i>Station</span>
         <span class="${activeTarget === "A" ? "selected" : ""}"><i class="legend-target-a"></i>A direction</span>
         <span class="${activeTarget === "B" ? "selected" : ""}"><i class="legend-target-b"></i>B direction</span>
         <span><i class="legend-recorded"></i>Recorded points</span>
@@ -556,9 +581,9 @@
     const svgWidth = document.querySelector(".direction-map svg").getBoundingClientRect().width;
     document.getElementById("map-scale-line").style.width = `${gridStepMeters * pixelsPerMeter * svgWidth / 300}px`;
     document.getElementById("map-summary").textContent = point
-      ? `You are ${point.distance.toFixed(1)} m away · ${point.bearing.toFixed(1)}° from midpoint · Target ${activeTarget} ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}°`
+      ? `You are ${point.distance.toFixed(1)} m from station · ${point.bearing.toFixed(1)}° from station · Target ${activeTarget} ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}°`
       : station.midpoint ? `Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north · Waiting for GPS`
-        : `Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north · Set midpoint to plot position`;
+        : `Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north · Set station coordinates to plot position`;
     const compassStatus = document.getElementById("compass-status");
     compassStatus.textContent = compassHeading !== null
       ? `${compassHeadingAbsolute ? "Compass" : "Heading ~"} ${compassHeading.toFixed(0)}°`
@@ -574,12 +599,20 @@
     const hint = document.getElementById("gps-hint");
     const capture = document.getElementById("capture-button");
     const retry = document.getElementById("gps-retry");
+    const station = selectedStation();
     if (errorMessage) {
+      positionEl.textContent = "Unavailable";
       label.textContent = "GPS unavailable";
       status.classList.add("waiting");
       hint.textContent = errorMessage;
       retry.hidden = !navigator.geolocation;
-      capture.disabled = true;
+      if (capture) capture.disabled = true;
+      const accuracy = document.getElementById("gps-accuracy");
+      if (accuracy) accuracy.textContent = "—";
+      const distance = document.getElementById("current-distance");
+      const azimuth = document.getElementById("current-azimuth");
+      if (distance) distance.textContent = "—";
+      if (azimuth) azimuth.textContent = "—";
       updateFieldMap();
       return;
     }
@@ -588,22 +621,33 @@
       label.textContent = "Finding GPS…";
       status.classList.add("waiting");
       retry.hidden = true;
-      capture.disabled = true;
+      if (capture) capture.disabled = true;
+      const accuracy = document.getElementById("gps-accuracy");
+      if (accuracy) accuracy.textContent = "—";
+      if (station) {
+        document.getElementById("current-distance").textContent = station.midpoint ? "Waiting for GPS" : "—";
+        document.getElementById("current-azimuth").textContent = "—";
+      }
       updateFieldMap();
       return;
     }
     positionEl.textContent = `${formatCoord(currentPosition.lat)}, ${formatCoord(currentPosition.lon)}`;
     label.textContent = `GPS ±${Math.round(currentPosition.accuracy)} m`;
     status.classList.remove("waiting");
-    const station = selectedStation();
     retry.hidden = true;
     hint.textContent = station?.midpoint
-      ? `Position updated ${new Date(currentPosition.capturedAt).toLocaleTimeString()}.`
-      : "Set the station midpoint before recording survey points.";
-    capture.disabled = !station?.midpoint;
+      ? `Updated ${new Date(currentPosition.capturedAt).toLocaleTimeString()}.`
+      : station
+        ? "Set station coordinates to calculate distance and azimuth."
+        : "Choose a station to calculate station-relative readings and record a point.";
+    if (capture) capture.disabled = !station?.midpoint;
+    const accuracy = document.getElementById("gps-accuracy");
+    if (accuracy) accuracy.textContent = `±${currentPosition.accuracy.toFixed(1)} m`;
     const measure = station?.midpoint ? distanceAndBearing(station.midpoint, currentPosition) : null;
-    document.getElementById("current-distance").textContent = measure ? `${measure.distance.toFixed(1)} m` : "Set midpoint";
-    document.getElementById("current-azimuth").textContent = measure ? `${measure.bearing.toFixed(1)}°` : "—";
+    const distance = document.getElementById("current-distance");
+    const azimuth = document.getElementById("current-azimuth");
+    if (distance) distance.textContent = measure ? `${measure.distance.toFixed(1)} m` : "—";
+    if (azimuth) azimuth.textContent = measure ? `${measure.bearing.toFixed(1)}°` : "—";
     updateFieldMap();
   }
 
@@ -612,8 +656,10 @@
     backdrop.className = "modal-backdrop";
     backdrop.innerHTML = `<form class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <h2 id="modal-title">${escapeHtml(title)}</h2>${description ? `<p>${escapeHtml(description)}</p>` : ""}
-      ${fields.map((field) => `<div class="field"><label for="field-${escapeHtml(field.name)}">${escapeHtml(field.label)}</label>
-        <input id="field-${escapeHtml(field.name)}" name="${escapeHtml(field.name)}" type="${field.type || "text"}" value="${escapeHtml(field.value ?? "")}" ${field.required ? "required" : ""} ${field.min !== undefined ? `min="${field.min}"` : ""} ${field.max !== undefined ? `max="${field.max}"` : ""} ${field.step ? `step="${field.step}"` : ""} ${field.autofocus ? "autofocus" : ""}></div>`).join("")}
+      ${fields.map((field) => field.type === "checkbox"
+        ? `<div class="field field-checkbox"><label><input name="${escapeHtml(field.name)}" type="checkbox" ${field.checked ? "checked" : ""}> <span>${escapeHtml(field.label)}</span></label></div>`
+        : `<div class="field"><label for="field-${escapeHtml(field.name)}">${escapeHtml(field.label)}</label>
+          <input id="field-${escapeHtml(field.name)}" name="${escapeHtml(field.name)}" type="${field.type || "text"}" value="${escapeHtml(field.value ?? "")}" ${field.required ? "required" : ""} ${field.min !== undefined ? `min="${field.min}"` : ""} ${field.max !== undefined ? `max="${field.max}"` : ""} ${field.step ? `step="${field.step}"` : ""} ${field.autofocus ? "autofocus" : ""}></div>`).join("")}
       <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-modal">Cancel</button><button class="button ${danger ? "button-danger" : "button-primary"}" type="submit">${escapeHtml(submitLabel)}</button></div>
     </form>`;
     document.body.append(backdrop);
@@ -650,37 +696,54 @@
     const project = { id: newId(), name: values.name.trim(), createdAt: now(), updatedAt: now(), sites: [] };
     projects.push(project);
     activeProjectId = project.id;
+    activeSiteId = null;
+    activeStationId = null;
     await persist();
     render();
   }
 
   async function createSite() {
     const project = selectedProject();
+    if (!project) {
+      showToast("Choose or create a project before adding a site.", true);
+      return;
+    }
     const values = await openModal({ title: "Add survey site", fields: [{ name: "name", label: "SITE NAME", value: `Site ${project.sites.length + 1}`, required: true, autofocus: true }] });
     if (!values) return;
-    project.sites.push({ id: newId(), name: values.name.trim(), createdAt: now(), updatedAt: now(), stations: [] });
+    const site = { id: newId(), name: values.name.trim(), createdAt: now(), updatedAt: now(), stations: [] };
+    project.sites.push(site);
+    activeSiteId = site.id;
+    activeStationId = null;
     project.updatedAt = now();
     await persist();
     render();
   }
 
-  async function createStation(siteId) {
-    const site = selectedProject().sites.find((item) => item.id === siteId);
+  async function createStation(siteId, acquire = false) {
+    const project = selectedProject();
+    const site = project?.sites.find((item) => item.id === siteId);
     if (!site) return;
-    const values = await openModal({ title: "New VES station", description: "Set the station label and the target azimuth for each assignment.", fields: [
+    const values = await openModal({ title: "New VES station", description: "Set station coordinates before point capture. You can use your current GPS position now or set them later.", fields: [
       { name: "name", label: "STATION NAME", value: `VES ${site.stations.length + 1}`, required: true, autofocus: true },
       { name: "targetA", label: "TARGET AZIMUTH A (DEGREES)", type: "number", value: "0", min: "0", max: "360", step: "0.1", required: true },
-      { name: "targetB", label: "TARGET AZIMUTH B (DEGREES)", type: "number", value: "180", min: "0", max: "360", step: "0.1", required: true }
+      { name: "targetB", label: "TARGET AZIMUTH B (DEGREES)", type: "number", value: "180", min: "0", max: "360", step: "0.1", required: true },
+      { name: "useCurrentCoordinates", label: "Use current GPS position as station coordinates", type: "checkbox", checked: true }
     ] });
     if (!values) return;
-    site.stations.push({ id: newId(), name: values.name.trim(), createdAt: now(), updatedAt: now(),
-      targets: { A: normalizeAzimuth(values.targetA), B: normalizeAzimuth(values.targetB) }, midpoint: null, points: [] });
+    const station = { id: newId(), name: values.name.trim(), createdAt: now(), updatedAt: now(),
+      targets: { A: normalizeAzimuth(values.targetA), B: normalizeAzimuth(values.targetB) }, midpoint: null, points: [] };
+    site.stations.push(station);
     site.updatedAt = now();
-    selectedProject().updatedAt = now();
+    project.updatedAt = now();
     await persist();
     activeSiteId = site.id;
-    activeStationId = null;
+    activeStationId = acquire ? station.id : null;
+    if (acquire) {
+      showingBrowse = false;
+      activeTarget = "A";
+    }
     render();
+    if (values.useCurrentCoordinates === "on") await setStationCoordinates(station, project);
   }
 
   async function renameEntity(entity, type) {
@@ -718,7 +781,7 @@
     const station = selectedStation();
     const confirmed = await openModal({
       title: "Delete this station?",
-      description: `“${station.name}”, its midpoint, and all ${station.points.length} recorded point${station.points.length === 1 ? "" : "s"} will be permanently deleted.`,
+      description: `“${station.name}”, its station coordinates, and all ${station.points.length} recorded point${station.points.length === 1 ? "" : "s"} will be permanently deleted.`,
       fields: [],
       submitLabel: "Delete station",
       danger: true
@@ -787,22 +850,33 @@
     });
   }
 
-  async function setMidpoint() {
+  async function setStationCoordinates(station = selectedStation(), project = selectedProject()) {
     const position = await getFreshPosition();
     if (!position) return;
-    const station = selectedStation();
+    if (!station || !project || !project.sites.some((site) => site.stations.includes(station))) {
+      showToast("Could not save station coordinates because the station is no longer available.", true);
+      return;
+    }
     station.midpoint = { ...position };
     station.updatedAt = now();
-    selectedProject().updatedAt = now();
+    project.updatedAt = now();
     await persist();
-    showToast("Station midpoint saved from GPS.");
+    showToast("Station coordinates saved from GPS.");
     render();
   }
 
   async function capturePoint() {
+    const station = selectedStation();
+    if (!station) {
+      showToast("Choose a station before recording a point.", true);
+      return;
+    }
+    if (!station.midpoint) {
+      showToast("Set station coordinates before recording a point.", true);
+      return;
+    }
     const position = await getFreshPosition();
     if (!position) return;
-    const station = selectedStation();
     const measure = station.midpoint ? distanceAndBearing(station.midpoint, position) : null;
     station.points.push({
       id: newId(), target: activeTarget, lat: position.lat, lon: position.lon, accuracy: position.accuracy,
@@ -836,12 +910,12 @@
 
   function exportCsv() {
     const project = selectedProject();
-    const header = ["project_id", "project_name", "site_id", "site_name", "station_id", "station_name", "record_type", "point_id", "target", "latitude", "longitude", "accuracy_m", "distance_from_midpoint_m", "azimuth_from_midpoint_deg", "target_azimuth_deg", "target_azimuth_a_deg", "target_azimuth_b_deg", "captured_at"];
+    const header = ["project_id", "project_name", "site_id", "site_name", "station_id", "station_name", "record_type", "point_id", "target", "latitude", "longitude", "accuracy_m", "distance_from_station_m", "azimuth_from_station_deg", "target_azimuth_deg", "target_azimuth_a_deg", "target_azimuth_b_deg", "captured_at"];
     const rows = [header];
     project.sites.forEach((site) => site.stations.forEach((station) => {
       const base = [project.id, project.name, site.id, site.name, station.id, station.name];
       rows.push([...base, "station", ...Array(8).fill(""), station.targets.A, station.targets.B, ""]);
-      if (station.midpoint) rows.push([...base, "midpoint", "", "", station.midpoint.lat, station.midpoint.lon, station.midpoint.accuracy, "", "", "", station.targets.A, station.targets.B, station.midpoint.capturedAt]);
+      if (station.midpoint) rows.push([...base, "station_coordinates", "", "", station.midpoint.lat, station.midpoint.lon, station.midpoint.accuracy, "", "", "", station.targets.A, station.targets.B, station.midpoint.capturedAt]);
       station.points.forEach((point) => rows.push([...base, "survey_point", point.id, point.target, point.lat, point.lon, point.accuracy, point.distanceMeters, point.bearingDegrees, point.targetAzimuth, station.targets.A, station.targets.B, point.capturedAt]));
     }));
     const content = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
@@ -973,26 +1047,46 @@
           validCoordinate(point) && Number.isFinite(point.accuracy) && point.accuracy >= 0 && validTimestamp(point.capturedAt))));
   }
 
+  app.addEventListener("change", (event) => {
+    const selector = event.target.closest("[data-select]");
+    if (!selector) return;
+    const value = selector.value || null;
+    if (selector.dataset.select === "project") {
+      activeProjectId = value;
+      activeSiteId = null;
+      activeStationId = null;
+    } else if (selector.dataset.select === "site") {
+      activeSiteId = value;
+      activeStationId = null;
+    } else if (selector.dataset.select === "station") {
+      activeStationId = value;
+      activeTarget = "A";
+    }
+    render();
+  });
+
   app.addEventListener("click", async (event) => {
     const target = event.target.closest("[data-action]");
     if (!target) return;
     const action = target.dataset.action;
     try {
       if (action === "new-project") await createProject();
-      else if (action === "home") { activeProjectId = null; activeSiteId = null; activeStationId = null; render(); }
+      else if (action === "browse") { showingBrowse = true; renderProjects(); }
+      else if (action === "capture-home") { showingBrowse = false; render(); }
+      else if (action === "home") { showingBrowse = true; activeProjectId = null; activeSiteId = null; activeStationId = null; render(); }
       else if (action === "back") {
         if (activeStationId) {
           activeStationId = null;
-          currentPosition = null;
         } else {
           activeProjectId = null;
           activeSiteId = null;
         }
         render();
       }
-      else if (action === "open-project") { activeProjectId = target.dataset.id; activeSiteId = null; activeStationId = null; render(); }
+      else if (action === "open-project") { showingBrowse = true; activeProjectId = target.dataset.id; activeSiteId = null; activeStationId = null; render(); }
       else if (action === "new-site") await createSite();
       else if (action === "new-station") await createStation(target.dataset.id);
+      else if (action === "quick-new-station") await createStation(activeSiteId, true);
       else if (action === "rename-project") await renameEntity(selectedProject(), "project");
       else if (action === "delete-project") await deleteProject();
       else if (action === "rename-site") { event.stopPropagation(); const site = selectedProject().sites.find((item) => item.id === target.dataset.id); await renameEntity(site, "site"); }
@@ -1004,7 +1098,7 @@
         else collapsedSiteIds.add(target.dataset.id);
         renderProject(selectedProject());
       }
-      else if (action === "open-station") { activeSiteId = target.dataset.siteId; activeStationId = target.dataset.id; currentPosition = null; activeTarget = "A"; render(); }
+      else if (action === "open-station") { showingBrowse = true; activeSiteId = target.dataset.siteId; activeStationId = target.dataset.id; currentPosition = null; activeTarget = "A"; render(); }
       else if (action === "select-target") { activeTarget = target.dataset.target; renderSurvey(selectedProject(), selectedSite(), selectedStation()); ensureLocationWatch(); }
       else if (action === "enable-compass") {
         try {
@@ -1015,7 +1109,7 @@
           throw error;
         }
       }
-      else if (action === "set-midpoint") await setMidpoint();
+      else if (action === "set-station-coordinates") await setStationCoordinates();
       else if (action === "capture-point") await capturePoint();
       else if (action === "retry-location") {
         stopLocationWatch();

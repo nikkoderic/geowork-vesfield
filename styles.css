@@ -104,13 +104,33 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .survey-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
 .survey-title { font-size: 30px; margin: 8px 0 5px; letter-spacing: -.05em; }
 .survey-target { color: var(--muted); font-size: 12px; }
+.acquisition-topline { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.acquisition-context { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; font: 10px var(--mono); }
+.acquisition-heading { margin-bottom: 17px; }
+.acquisition-selector { margin-bottom: 23px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+.station-setup-alert { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin: -4px 0 18px; padding: 16px 18px; border: 1px solid #c8d6f7; border-radius: 10px; background: #f2f6ff; }
+.station-setup-alert h2 { margin: 0 0 4px; color: var(--green); font-size: 14px; }
+.station-setup-alert p { margin: 0; color: #53627c; font-size: 11px; line-height: 1.5; }
+.field-checkbox { margin-top: 5px; }
+.modal .field-checkbox label { display: flex; align-items: flex-start; gap: 8px; color: var(--ink); font: 12px/1.5 var(--sans); letter-spacing: 0; cursor: pointer; }
+.modal .field-checkbox input { width: 16px; height: 16px; min-height: 0; flex: 0 0 16px; margin: 1px 0 0; padding: 0; border: 0; border-radius: 0; background: transparent; accent-color: var(--green-2); }
+.selector-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.selector-field { display: grid; min-width: 0; gap: 6px; }
+.selector-field span { color: var(--muted); font: 9px var(--mono); letter-spacing: .08em; }
+.selector-field select { width: 100%; min-width: 0; height: 38px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: white; font-size: 12px; }
+.selector-field select:disabled { color: #9aa1aa; background: #f4f6f9; }
+.selector-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+.selector-actions .button:disabled { cursor: not-allowed; opacity: .45; transform: none; }
 .survey-layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(310px, .85fr); gap: 15px; align-items: start; }
+.survey-layout.position-layout { display: block; max-width: 760px; }
 .readout-panel { padding: 21px; color: white; background: var(--green); border-radius: 13px; }
 .readout-top { display: flex; justify-content: space-between; align-items: center; color: #b8c8ba; font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
 .gps-state { display: inline-flex; gap: 7px; align-items: center; }
 .gps-state .status-dot { background: var(--cyan); }
 .gps-state.waiting .status-dot { background: #d9a360; }
 .readout-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin: 20px 0; background: #ffffff1a; border: 1px solid #ffffff1a; border-radius: 9px; overflow: hidden; }
+.readout-grid.position-only { grid-template-columns: 1fr 1fr; }
+.readout-grid.position-only .readout-cell { min-height: 102px; }
 .readout-cell { min-height: 86px; padding: 14px; background: #001964; }
 .readout-label { display: block; margin-bottom: 9px; color: #aabdaf; font: 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
 .readout-value { display: block; color: white; font: 17px var(--mono); letter-spacing: -.03em; }
@@ -123,6 +143,7 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .target-chip-b.active { color: #fff; border-color: #d51ab8; background: #d51ab8; }
 .capture-button { width: 100%; min-height: 53px; margin-top: 16px; font-size: 13px; }
 .capture-button:disabled { cursor: not-allowed; opacity: .5; transform: none; }
+.capture-prompt { margin: 16px 0 0; padding: 12px; border: 1px solid #ffffff24; border-radius: 8px; color: #d6dfed; font-size: 11px; line-height: 1.5; }
 .side-panel { display: grid; gap: 14px; }
 .map-card { min-width: 0; padding: 17px; border: 1px solid var(--line); border-radius: 11px; background: white; }
 .map-card-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -208,6 +229,9 @@ button:focus-visible, input:focus-visible, a:focus-visible {
   .main-content { width: calc(100% - 34px); padding: 32px 0 46px; }
   .page-heading { align-items: flex-start; flex-direction: column; gap: 17px; margin-bottom: 25px; }
   .survey-header { align-items: flex-start; }
+  .selector-grid { grid-template-columns: 1fr; }
+  .acquisition-topline { margin-bottom: 14px; }
+  .station-setup-alert { align-items: stretch; flex-direction: column; }
   .survey-actions { max-width: 180px; }
   .survey-actions .button { padding: 0 9px; font-size: 10px; }
   .survey-layout { grid-template-columns: 1fr; }
