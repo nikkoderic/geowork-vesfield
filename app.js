@@ -415,10 +415,11 @@
     backdrop.className = "modal-backdrop qr-modal-backdrop";
     backdrop.innerHTML = `<section class="modal qr-modal" role="dialog" aria-modal="true" aria-labelledby="qr-modal-title">
       <h2 id="qr-modal-title">Share station setup</h2>
-      <p>Scan this code on the other device to match the project, site, and station coordinates. The other device will select target ${activeTarget === "A" ? "B" : "A"}.</p>
+      <p>Scan this code on the other device to match the project, site, station coordinates, and A/B target azimuths. The other device will select target ${activeTarget === "A" ? "B" : "A"}.</p>
       <div class="qr-code">${qr.createSvgTag(6, 4, "VES Field project and station sharing code", "VES Field station QR code")}</div>
       <div class="qr-identifiers"><span>PROJECT · ${escapeHtml(project.id)}</span><span>SITE · ${escapeHtml(site.id)}</span><span>STATION · ${escapeHtml(station.id)}</span>
-        <span>COORDINATES · ${formatCoord(station.midpoint.lat)}, ${formatCoord(station.midpoint.lon)} · ±${station.midpoint.accuracy.toFixed(1)} m</span></div>
+        <span>COORDINATES · ${formatCoord(station.midpoint.lat)}, ${formatCoord(station.midpoint.lon)} · ${station.midpoint.accuracy == null ? "accuracy unavailable" : `±${station.midpoint.accuracy.toFixed(1)} m`}</span>
+        <span>TARGET AZIMUTHS · A ${normalizeAzimuth(station.targets.A).toFixed(1)}° · B ${normalizeAzimuth(station.targets.B).toFixed(1)}°</span></div>
       <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-qr">Close</button></div>
     </section>`;
     document.body.append(backdrop);
@@ -442,7 +443,8 @@
     const validTarget = (value) => Number.isFinite(value) && value >= 0 && value < 360;
     const validMidpoint = (value) => value && Number.isFinite(value.lat) && value.lat >= -90 && value.lat <= 90 &&
       Number.isFinite(value.lon) && value.lon >= -180 && value.lon <= 180 &&
-      Number.isFinite(value.accuracy) && value.accuracy >= 0 && typeof value.capturedAt === "string" && !Number.isNaN(Date.parse(value.capturedAt));
+      (value.accuracy == null || (Number.isFinite(value.accuracy) && value.accuracy >= 0)) &&
+      typeof value.capturedAt === "string" && !Number.isNaN(Date.parse(value.capturedAt));
     if (payload.kind !== "ves-field-station" || payload.version !== 2 ||
       !validId(payload.project?.id) || !validName(payload.project?.name) ||
       !validId(payload.site?.id) || !validName(payload.site?.name) ||
@@ -464,17 +466,22 @@
     const incomingMidpoint = payload.station.midpoint;
     const coordinatesDiffer = existingStation?.midpoint &&
       (existingStation.midpoint.lat !== incomingMidpoint.lat ||
-        existingStation.midpoint.lon !== incomingMidpoint.lon ||
-        existingStation.midpoint.accuracy !== incomingMidpoint.accuracy);
-    if (coordinatesDiffer) {
+        existingStation.midpoint.lon !== incomingMidpoint.lon);
+    const targetsDiffer = existingStation &&
+      (normalizeAzimuth(existingStation.targets.A) !== payload.station.targets.A ||
+        normalizeAzimuth(existingStation.targets.B) !== payload.station.targets.B);
+    if (coordinatesDiffer || targetsDiffer) {
+      const changes = [];
+      if (coordinatesDiffer) changes.push(`Replace the saved station location ${formatCoord(existingStation.midpoint.lat)}, ${formatCoord(existingStation.midpoint.lon)} with ${formatCoord(incomingMidpoint.lat)}, ${formatCoord(incomingMidpoint.lon)}.`);
+      if (targetsDiffer) changes.push(`Replace target azimuths A ${normalizeAzimuth(existingStation.targets.A).toFixed(1)}° / B ${normalizeAzimuth(existingStation.targets.B).toFixed(1)}° with A ${payload.station.targets.A.toFixed(1)}° / B ${payload.station.targets.B.toFixed(1)}°.`);
       const confirmed = await openModal({
-        title: "Replace station coordinates from QR?",
-        description: `The saved location ${formatCoord(existingStation.midpoint.lat)}, ${formatCoord(existingStation.midpoint.lon)} will be replaced with ${formatCoord(incomingMidpoint.lat)}, ${formatCoord(incomingMidpoint.lon)}.`,
+        title: "Replace station setup from QR?",
+        description: changes.join(" "),
         fields: [],
-        submitLabel: "Replace coordinates"
+        submitLabel: "Replace station setup"
       });
       if (!confirmed) {
-        showToast("Station link canceled. Existing coordinates were kept.");
+        showToast("Station link canceled. Existing station setup was kept.");
         return;
       }
     }
@@ -500,8 +507,11 @@
         points: []
       };
       site.stations.push(station);
-    } else if (!station.midpoint || coordinatesDiffer) {
-      station.midpoint = incomingMidpoint;
+    } else {
+      const setupChanged = !station.midpoint || coordinatesDiffer || targetsDiffer;
+      if (!station.midpoint || coordinatesDiffer) station.midpoint = incomingMidpoint;
+      if (targetsDiffer) station.targets = { A: payload.station.targets.A, B: payload.station.targets.B };
+      if (setupChanged) station.updatedAt = timestamp;
     }
     project.updatedAt = timestamp;
     site.updatedAt = timestamp;
@@ -671,8 +681,8 @@
       </section>
       ${station && !stationCoordinates ? `<section class="station-setup-alert" aria-labelledby="station-setup-title">
         <div><h2 id="station-setup-title">Set station coordinates first</h2>
-          <p>These coordinates are the reference for distance, azimuth, and point capture.</p></div>
-        <button class="button button-primary" data-action="set-station-coordinates">◎ Use current GPS position</button>
+          <p>Enter them manually or acquire them from GPS in Station setup.</p></div>
+        <button class="button button-primary" data-action="edit-station">Station setup</button>
       </section>` : ""}
       <section class="survey-layout ${station ? "" : "position-layout"}">
         <div class="readout-panel">
@@ -697,8 +707,7 @@
             <section class="data-card"><h3>Station coordinates</h3>
               <div class="coordinate-row"><span>Coordinates</span><span>${stationCoordinatesText}</span></div>
               <div class="coordinate-row"><span>GPS accuracy</span><span>${stationCoordinates?.accuracy == null ? "—" : `${stationCoordinates.accuracy.toFixed(1)} m`}</span></div>
-              ${stationCoordinates ? `<button class="button button-outline button-small" style="margin-top:13px;width:100%" data-action="set-station-coordinates">Update station coordinates</button>` : ""}
-              ${captureView ? "" : `<button class="button button-outline button-small" style="margin-top:7px;width:100%" data-action="edit-station">Station settings</button>`}
+              ${stationCoordinates ? `<button class="button button-outline button-small station-setup-button" data-action="edit-station">Station setup</button>` : ""}
             </section>
             <section class="data-card"><h3>Acquired points <span class="project-meta">(${station.points.length})</span></h3><div class="point-list">${pointMarkup}</div></section>
           </aside>` : ""}
@@ -1115,42 +1124,139 @@
   async function editStation() {
     const station = selectedStation();
     const project = selectedProject();
-    const values = await openModal({ title: "Station settings", fields: [
-      { name: "targetA", label: "TARGET AZIMUTH A (DEGREES)", type: "number", value: String(station.targets.A), min: "0", max: "360", step: "0.1", required: true },
-      { name: "targetB", label: "TARGET AZIMUTH B (DEGREES)", type: "number", value: String(station.targets.B), min: "0", max: "360", step: "0.1", required: true },
-      { name: "updateCoordinates", label: station.midpoint ? "Replace station coordinates with current GPS position" : "Set station coordinates from current GPS position", type: "checkbox" }
-    ] });
-    if (!values) return;
-    const targets = { A: normalizeAzimuth(values.targetA), B: normalizeAzimuth(values.targetB) };
-    const updateCoordinates = values.updateCoordinates === "on";
-    const targetChanged = targets.A !== normalizeAzimuth(station.targets.A) || targets.B !== normalizeAzimuth(station.targets.B);
-    if (!targetChanged && !updateCoordinates) {
-      showToast("No station settings changed.");
+    if (!station || !project) {
+      showToast("Choose a station before editing its setup.", true);
       return;
     }
-    const changes = [];
-    if (targetChanged) changes.push(`Set target azimuths to A ${targets.A.toFixed(1)}° and B ${targets.B.toFixed(1)}°.`);
-    if (updateCoordinates) changes.push("Capture and replace the station coordinates using the current GPS position.");
-    const confirmed = await openModal({
-      title: "Confirm station setup changes?",
-      description: changes.join(" "),
-      fields: [],
-      submitLabel: "Confirm changes"
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `<form class="modal station-setup-modal" role="dialog" aria-modal="true" aria-labelledby="station-setup-modal-title">
+      <h2 id="station-setup-modal-title">Station setup</h2>
+      <p>Edit station coordinates and target azimuths. Changes are confirmed before they are saved.</p>
+      <fieldset class="station-coordinate-fields">
+        <legend>STATION COORDINATES</legend>
+        <div class="station-coordinate-inputs">
+          <label class="field"><span>LATITUDE (−90 TO 90)</span><input name="latitude" type="number" min="-90" max="90" step="any" value="${station.midpoint ? escapeHtml(String(station.midpoint.lat)) : ""}" inputmode="decimal"></label>
+          <label class="field"><span>LONGITUDE (−180 TO 180)</span><input name="longitude" type="number" min="-180" max="180" step="any" value="${station.midpoint ? escapeHtml(String(station.midpoint.lon)) : ""}" inputmode="decimal"></label>
+          <button class="button button-outline gps-coordinate-button" type="button" data-action="fill-gps-coordinates">◎ Acquire GPS coordinates</button>
+        </div>
+        <div class="station-setup-gps-status" role="status" aria-live="polite"></div>
+      </fieldset>
+      <div class="station-coordinate-inputs station-azimuth-fields">
+        <label class="field"><span>TARGET AZIMUTH A (0–&lt;360°)</span><input name="targetA" type="number" min="0" max="359.999999" step="any" value="${escapeHtml(String(normalizeAzimuth(station.targets.A)))}" required inputmode="decimal"></label>
+        <label class="field"><span>TARGET AZIMUTH B (0–&lt;360°)</span><input name="targetB" type="number" min="0" max="359.999999" step="any" value="${escapeHtml(String(normalizeAzimuth(station.targets.B)))}" required inputmode="decimal"></label>
+      </div>
+      <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">Review changes</button></div>
+    </form>`;
+    document.body.append(backdrop);
+    const form = backdrop.querySelector("form");
+    const latitude = form.elements.namedItem("latitude");
+    const longitude = form.elements.namedItem("longitude");
+    const gpsButton = form.querySelector('[data-action="fill-gps-coordinates"]');
+    const gpsStatus = form.querySelector(".station-setup-gps-status");
+    let gpsPosition = null;
+    gpsButton.focus();
+
+    const close = () => backdrop.remove();
+    backdrop.addEventListener("click", (event) => {
+      if (event.target.closest('[data-action="close-modal"]')) close();
+      if (event.target.closest('[data-action="fill-gps-coordinates"]')) {
+        gpsButton.disabled = true;
+        gpsStatus.textContent = "Acquiring a GPS fix…";
+        getFreshPosition().then((position) => {
+          if (!backdrop.isConnected) return;
+          if (position) {
+            gpsPosition = position;
+            latitude.value = String(position.lat);
+            longitude.value = String(position.lon);
+            gpsStatus.textContent = `GPS fix acquired · accuracy ±${position.accuracy.toFixed(1)} m`;
+          } else {
+            gpsStatus.textContent = "Could not acquire GPS coordinates.";
+          }
+        }).catch((error) => {
+          if (backdrop.isConnected) gpsStatus.textContent = `Could not acquire GPS coordinates: ${error.message}`;
+        }).finally(() => {
+          if (backdrop.isConnected) gpsButton.disabled = false;
+        });
+      }
     });
-    if (!confirmed) return;
-    const position = updateCoordinates ? await getFreshPosition() : null;
-    if (updateCoordinates && !position) return;
-    if (selectedStation()?.id !== station.id) {
-      showToast("Could not save station settings because the selected station changed.", true);
-      return;
+    for (const input of [latitude, longitude]) {
+      input.addEventListener("input", () => {
+        input.setCustomValidity("");
+        gpsPosition = null;
+      });
     }
-    station.targets = targets;
-    if (position) station.midpoint = { ...position };
-    station.updatedAt = now();
-    project.updatedAt = now();
-    await persist();
-    render();
-    showToast("Station setup saved.");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const latitudeText = latitude.value.trim();
+      const longitudeText = longitude.value.trim();
+      latitude.setCustomValidity("");
+      longitude.setCustomValidity("");
+      if (Boolean(latitudeText) !== Boolean(longitudeText)) {
+        const missing = latitudeText ? longitude : latitude;
+        missing.setCustomValidity("Enter both latitude and longitude, or use the GPS button.");
+        missing.reportValidity();
+        return;
+      }
+      const inputs = [latitude, longitude, form.elements.namedItem("targetA"), form.elements.namedItem("targetB")];
+      for (const input of inputs) {
+        if (!input.reportValidity()) return;
+      }
+      const hasCoordinates = Boolean(latitudeText && longitudeText);
+      const lat = hasCoordinates ? Number(latitudeText) : null;
+      const lon = hasCoordinates ? Number(longitudeText) : null;
+      const targetA = Number(form.elements.namedItem("targetA").value);
+      const targetB = Number(form.elements.namedItem("targetB").value);
+      if (hasCoordinates && (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lon) || lon < -180 || lon > 180)) {
+        (lat < -90 || lat > 90 ? latitude : longitude).setCustomValidity("Enter valid decimal-degree coordinates within the allowed range.");
+        (lat < -90 || lat > 90 ? latitude : longitude).reportValidity();
+        return;
+      }
+      if (![targetA, targetB].every((value) => Number.isFinite(value) && value >= 0 && value < 360)) {
+        showToast("Target azimuths must be numbers from 0° up to, but not including, 360°.", true);
+        return;
+      }
+
+      const targets = { A: normalizeAzimuth(targetA), B: normalizeAzimuth(targetB) };
+      const coordinatesChanged = hasCoordinates && (!station.midpoint || station.midpoint.lat !== lat || station.midpoint.lon !== lon ||
+        (gpsPosition && station.midpoint.accuracy !== gpsPosition.accuracy));
+      const targetChanged = targets.A !== normalizeAzimuth(station.targets.A) || targets.B !== normalizeAzimuth(station.targets.B);
+      if (!coordinatesChanged && !targetChanged) {
+        close();
+        showToast("No station setup changes.");
+        return;
+      }
+      const changes = [];
+      if (coordinatesChanged) {
+        changes.push(gpsPosition && gpsPosition.lat === lat && gpsPosition.lon === lon
+          ? `Set station coordinates to ${formatCoord(lat)}, ${formatCoord(lon)} using GPS (accuracy ±${gpsPosition.accuracy.toFixed(1)} m).`
+          : `Set station coordinates to ${formatCoord(lat)}, ${formatCoord(lon)} manually; GPS accuracy will be unavailable.`);
+      }
+      if (targetChanged) changes.push(`Set target azimuths to A ${targets.A.toFixed(1)}° and B ${targets.B.toFixed(1)}°.`);
+      close();
+      const confirmed = await openModal({
+        title: "Confirm station setup changes?",
+        description: changes.join(" "),
+        fields: [],
+        submitLabel: "Confirm changes"
+      });
+      if (!confirmed) return;
+      if (selectedStation()?.id !== station.id || !project.sites.some((site) => site.stations.includes(station))) {
+        showToast("Could not save station setup because the selected station changed.", true);
+        return;
+      }
+      station.targets = targets;
+      if (coordinatesChanged) {
+        station.midpoint = gpsPosition && gpsPosition.lat === lat && gpsPosition.lon === lon
+          ? { ...gpsPosition }
+          : { lat, lon, accuracy: null, capturedAt: now() };
+      }
+      station.updatedAt = now();
+      project.updatedAt = now();
+      await persist();
+      render();
+      showToast("Station setup saved.");
+    });
   }
 
   function getFreshPosition() {
