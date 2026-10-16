@@ -745,20 +745,20 @@
               <circle id="map-current-position" class="map-current-position" cx="160" cy="140" r="6" hidden></circle>
             </g>
             <g class="map-north-needle">
-              <path d="M160 22l-4 10 4-3 4 3z"></path>
+              <path d="M160 22L155 34L160 31L165 34Z"></path>
             </g>
           </g>
           <rect class="map-border" x="40" y="20" width="240" height="240" rx="2"></rect>
           <circle class="map-midpoint" cx="160" cy="140" r="5"></circle>
           <g class="map-target-compass">
             <circle cx="252" cy="53" r="22"></circle>
+            <path class="target-compass-forward" d="M252 43L247 58L252 55L257 58Z"></path>
             <g id="map-compass-north-arrow">
               <path class="target-compass-north-arrow" d="M252 31L247 41L252 38L257 41Z"></path>
             </g>
             <g id="map-target-compass-arrow">
               <path class="target-compass-arrow" d="M252 34L246 46L252 43L258 46Z"></path>
             </g>
-            <path class="target-compass-forward" d="M252 35L244 61L252 56L260 61Z"></path>
             <text id="map-compass-north-label" x="252" y="37" text-anchor="middle" class="target-compass-north">N</text>
             <text id="map-target-compass-label" x="252" y="83" text-anchor="middle" class="target-compass-label">A · —°</text>
           </g>
