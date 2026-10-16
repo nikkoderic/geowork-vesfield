@@ -19,11 +19,13 @@
   let currentPosition = null;
   let watchId = null;
   let compassHeading = null;
+  let compassHeadingAbsolute = true;
   let compassListening = false;
   let compassNeedsPermission = false;
   let compassPermissionAttempted = false;
   let compassError = "";
   let lastOrientationAt = 0;
+  let lastAbsoluteOrientationAt = 0;
   let deferredInstallPrompt = null;
 
   const newId = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -145,16 +147,28 @@
 
   function updateCompassHeading(event) {
     const timestamp = Date.now();
-    if (timestamp - lastOrientationAt < 80) return;
+    const hasAbsoluteHeading = Number.isFinite(event.webkitCompassHeading) ||
+      Number.isFinite(event.compassHeading) ||
+      (event.absolute && Number.isFinite(event.alpha));
+    if (!hasAbsoluteHeading && timestamp - lastOrientationAt < 80) return;
     let heading;
     if (Number.isFinite(event.webkitCompassHeading)) {
       heading = event.webkitCompassHeading;
+      compassHeadingAbsolute = true;
+    } else if (Number.isFinite(event.compassHeading)) {
+      heading = event.compassHeading;
+      compassHeadingAbsolute = true;
     } else if (event.absolute && Number.isFinite(event.alpha)) {
       heading = 360 - event.alpha + (screen.orientation?.angle || 0);
+      compassHeadingAbsolute = true;
+    } else if (Number.isFinite(event.alpha) && timestamp - lastAbsoluteOrientationAt > 1500) {
+      heading = 360 - event.alpha + (screen.orientation?.angle || 0);
+      compassHeadingAbsolute = false;
     } else {
       return;
     }
     lastOrientationAt = timestamp;
+    if (compassHeadingAbsolute) lastAbsoluteOrientationAt = timestamp;
     compassHeading = normalizeAzimuth(heading);
     updateFieldMap();
   }
@@ -225,9 +239,11 @@
     if (!project) {
       stopCompassWatch();
       compassHeading = null;
+      compassHeadingAbsolute = true;
       compassNeedsPermission = false;
       compassPermissionAttempted = false;
       compassError = "";
+      lastAbsoluteOrientationAt = 0;
       activeProjectId = null;
       activeSiteId = null;
       activeStationId = null;
@@ -242,9 +258,11 @@
     } else {
       stopCompassWatch();
       compassHeading = null;
+      compassHeadingAbsolute = true;
       compassNeedsPermission = false;
       compassPermissionAttempted = false;
       compassError = "";
+      lastAbsoluteOrientationAt = 0;
       activeStationId = null;
       renderProject(project);
     }
@@ -407,9 +425,7 @@
           <g class="map-target-compass">
             <circle cx="252" cy="53" r="22"></circle>
             <path class="target-compass-forward" d="M252 28L248 35L256 35Z"></path>
-            <g id="map-compass-north-marker">
-              <text id="map-compass-north-label" x="252" y="37" text-anchor="middle" class="target-compass-north">N</text>
-            </g>
+            <text id="map-compass-north-label" x="252" y="37" text-anchor="middle" class="target-compass-north">N</text>
             <g id="map-target-compass-arrow">
               <path class="target-compass-arrow" d="M252 40L247 57L252 54L257 57Z"></path>
             </g>
@@ -497,14 +513,11 @@
     setRay("map-target-b", targetB, "B");
     const selectedBearing = activeTarget === "A" ? targetA : targetB;
     const headingOffset = compassHeading ?? 0;
-    document.getElementById("map-compass-north-marker").setAttribute(
-      "transform",
-      `rotate(${-headingOffset} 252 53)`
-    );
-    document.getElementById("map-compass-north-label").setAttribute(
-      "transform",
-      `rotate(${headingOffset} 252 37)`
-    );
+    const northAngle = -headingOffset * Math.PI / 180;
+    const northMarker = document.getElementById("map-compass-north-label");
+    northMarker.setAttribute("x", String(252 + Math.sin(northAngle) * 15));
+    northMarker.setAttribute("y", String(53 - Math.cos(northAngle) * 15 + 2.5));
+    northMarker.textContent = compassHeadingAbsolute ? "N" : "N?";
     document.getElementById("map-target-compass-arrow").setAttribute(
       "transform",
       `rotate(${selectedBearing - headingOffset} 252 53)`
@@ -548,8 +561,8 @@
         : `Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north · Set midpoint to plot position`;
     const compassStatus = document.getElementById("compass-status");
     compassStatus.textContent = compassHeading !== null
-      ? `Compass ${compassHeading.toFixed(0)}°`
-      : compassError || (compassNeedsPermission ? "Heading unavailable" : "Compass unavailable");
+      ? `${compassHeadingAbsolute ? "Compass" : "Heading ~"} ${compassHeading.toFixed(0)}°`
+      : compassError || (compassNeedsPermission ? "Enable compass" : compassListening ? "Waiting for heading…" : "Compass unavailable");
     document.getElementById("compass-enable").hidden = compassHeading !== null || !compassNeedsPermission;
   }
 
