@@ -20,6 +20,7 @@
   let currentPosition = null;
   let watchId = null;
   let gpsOperation = "";
+  let stopQrScanner = null;
   let compassHeading = null;
   let compassHeadingAbsolute = true;
   let compassListening = false;
@@ -381,6 +382,183 @@
     </div>`).join("") : `<div class="inline-empty">No points acquired at this station yet.</div>`;
   }
 
+  function encodeStationQrPayload(project, site, station) {
+    const payload = {
+      kind: "ves-field-station",
+      version: 1,
+      project: { id: project.id, name: project.name },
+      site: { id: site.id, name: site.name },
+      station: { id: station.id, name: station.name, targets: station.targets },
+      sourceTarget: activeTarget
+    };
+    const bytes = new TextEncoder().encode(JSON.stringify(payload));
+    let binary = "";
+    for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
+    return `VESFIELD:1:${btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+  }
+
+  function showStationQr() {
+    const project = selectedProject();
+    const site = selectedSite();
+    const station = selectedStation();
+    if (!project || !site || !station) throw new Error("Select a station before sharing its QR code.");
+    if (typeof qrcode !== "function") throw new Error("QR code generation is unavailable.");
+
+    const qr = qrcode(0, "M");
+    qr.addData(encodeStationQrPayload(project, site, station), "Byte");
+    qr.make();
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop qr-modal-backdrop";
+    backdrop.innerHTML = `<section class="modal qr-modal" role="dialog" aria-modal="true" aria-labelledby="qr-modal-title">
+      <h2 id="qr-modal-title">Share station setup</h2>
+      <p>Scan this code on the other device to match the project, site, and station. The other device will select target ${activeTarget === "A" ? "B" : "A"}.</p>
+      <div class="qr-code">${qr.createSvgTag(6, 4, "VES Field project and station sharing code", "VES Field station QR code")}</div>
+      <div class="qr-identifiers"><span>PROJECT · ${escapeHtml(project.id)}</span><span>SITE · ${escapeHtml(site.id)}</span><span>STATION · ${escapeHtml(station.id)}</span></div>
+      <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-qr">Close</button></div>
+    </section>`;
+    document.body.append(backdrop);
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop || event.target.closest('[data-action="close-qr"]')) backdrop.remove();
+    });
+  }
+
+  function decodeStationQrPayload(text) {
+    const match = /^VESFIELD:1:([A-Za-z0-9_-]+)$/.exec(text.trim());
+    if (!match) throw new Error("This QR code is not a VES Field station code.");
+    const base64 = match[1].replace(/-/g, "+").replace(/_/g, "/");
+    const binary = atob(base64 + "=".repeat((4 - base64.length % 4) % 4));
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const payload = JSON.parse(new TextDecoder().decode(bytes));
+    const validId = (value) => typeof value === "string" && value.length > 0 && value.length <= 128 && !/[\u0000-\u001f]/.test(value);
+    const validName = (value) => typeof value === "string" && value.trim().length > 0 && value.length <= 120;
+    const validTarget = (value) => Number.isFinite(value) && value >= 0 && value < 360;
+    if (payload.kind !== "ves-field-station" || payload.version !== 1 ||
+      !validId(payload.project?.id) || !validName(payload.project?.name) ||
+      !validId(payload.site?.id) || !validName(payload.site?.name) ||
+      !validId(payload.station?.id) || !validName(payload.station?.name) ||
+      !validTarget(payload.station?.targets?.A) || !validTarget(payload.station?.targets?.B) ||
+      !["A", "B"].includes(payload.sourceTarget)) {
+      throw new Error("The VES Field station code is incomplete or invalid.");
+    }
+    return payload;
+  }
+
+  async function applyStationQrPayload(text) {
+    const payload = decodeStationQrPayload(text);
+    const timestamp = now();
+    let project = projects.find((item) => item.id === payload.project.id);
+    if (!project) {
+      project = { id: payload.project.id, name: payload.project.name, createdAt: timestamp, updatedAt: timestamp, sites: [] };
+      projects.push(project);
+    }
+    let site = project.sites.find((item) => item.id === payload.site.id);
+    if (!site) {
+      site = { id: payload.site.id, name: payload.site.name, createdAt: timestamp, updatedAt: timestamp, stations: [] };
+      project.sites.push(site);
+    }
+    let station = site.stations.find((item) => item.id === payload.station.id);
+    if (!station) {
+      station = {
+        id: payload.station.id,
+        name: payload.station.name,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        targets: { A: payload.station.targets.A, B: payload.station.targets.B },
+        midpoint: null,
+        points: []
+      };
+      site.stations.push(station);
+    }
+    project.updatedAt = timestamp;
+    site.updatedAt = timestamp;
+    await persist();
+    activeProjectId = project.id;
+    activeSiteId = site.id;
+    activeStationId = station.id;
+    activeTarget = payload.sourceTarget === "A" ? "B" : "A";
+    showingBrowse = false;
+    render();
+    showToast(`Station linked. Target ${activeTarget} selected.`);
+  }
+
+  async function scanStationQr() {
+    if (!navigator.mediaDevices?.getUserMedia || typeof jsQR !== "function") {
+      throw new Error("QR scanning requires a supported camera browser and an HTTPS connection.");
+    }
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop qr-modal-backdrop";
+    backdrop.innerHTML = `<section class="modal qr-modal" role="dialog" aria-modal="true" aria-labelledby="qr-scan-title">
+      <h2 id="qr-scan-title">Scan station QR</h2>
+      <p>Point the camera at another VES Field station QR code.</p>
+      <video class="qr-scan-video" autoplay muted playsinline aria-label="Camera preview for QR scanning"></video>
+      <div class="gps-operation-status qr-scan-status" role="status">Starting camera…</div>
+      <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-qr">Cancel</button></div>
+    </section>`;
+    document.body.append(backdrop);
+    const video = backdrop.querySelector("video");
+    let stream = null;
+    let animationFrame = 0;
+    let lastScanAt = 0;
+    let closed = false;
+    const stop = () => {
+      if (closed) return;
+      closed = true;
+      cancelAnimationFrame(animationFrame);
+      stream?.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+      backdrop.remove();
+      document.removeEventListener("keydown", onKeyDown);
+      if (stopQrScanner === stop) stopQrScanner = null;
+    };
+    stopQrScanner = stop;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") stop();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop || event.target.closest('[data-action="close-qr"]')) stop();
+    });
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" } } });
+      if (closed) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      video.srcObject = stream;
+      await video.play();
+      backdrop.querySelector(".qr-scan-status").textContent = "Scanning for a VES Field code…";
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) throw new Error("Could not start QR scanning.");
+      const scanFrame = (timestamp) => {
+        if (closed) return;
+        if (timestamp - lastScanAt >= 120 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) {
+          lastScanAt = timestamp;
+          const scale = Math.min(1, 720 / video.videoWidth);
+          canvas.width = Math.round(video.videoWidth * scale);
+          canvas.height = Math.round(video.videoHeight * scale);
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const image = context.getImageData(0, 0, canvas.width, canvas.height);
+          const result = jsQR(image.data, image.width, image.height, { inversionAttempts: "dontInvert" });
+          if (result) {
+            stop();
+            applyStationQrPayload(result.data).catch((error) => showToast(`Could not link station: ${error.message}`, true));
+            return;
+          }
+        }
+        animationFrame = requestAnimationFrame(scanFrame);
+      };
+      scanFrame();
+    } catch (error) {
+      stop();
+      document.removeEventListener("keydown", onKeyDown);
+      if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError") {
+        throw new Error("Camera access was denied. Allow camera access in your browser settings and try again.");
+      }
+      throw new Error(`Could not start QR scanning: ${error.message}`);
+    }
+  }
+
   function renderSurvey(project, site, station) {
     const captureView = !showingBrowse;
     const targetValue = station?.targets[activeTarget];
@@ -392,23 +570,30 @@
     const projectOptions = projects.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === activeProjectId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
     const siteOptions = (selectedProject()?.sites || []).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === activeSiteId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
     const stationOptions = (selectedSite()?.stations || []).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === activeStationId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
+    const selectorRow = (label, selector, options, createAction, createLabel, uid, disabled = false) => `<div class="selector-row">
+      <label class="selector-field"><span>${label}</span><select data-select="${selector}" aria-label="${createLabel}" ${disabled ? "disabled" : ""}><option value="">Choose ${selector === "project" ? "project" : createLabel.toLowerCase()}</option>${options}</select>
+        <small class="selector-uid" title="${uid ? `UID: ${escapeHtml(uid)}` : "No item selected"}">UID · ${uid ? escapeHtml(uid) : "—"}</small></label>
+      <button class="button button-outline selector-add" data-action="${createAction}" aria-label="Add ${createLabel.toLowerCase()}" title="Add ${createLabel.toLowerCase()}" ${disabled ? "disabled" : ""}>+</button>
+    </div>`;
     const captureSelector = captureView ? `<section class="acquisition-selector" aria-label="Choose survey station">
         <div class="selector-grid">
-          <label class="selector-field"><span>PROJECT</span><select data-select="project" aria-label="Project"><option value="">Choose project</option>${projectOptions}</select></label>
-          <label class="selector-field"><span>SITE</span><select data-select="site" aria-label="Site" ${activeProjectId ? "" : "disabled"}><option value="">Choose site</option>${siteOptions}</select></label>
-          <label class="selector-field"><span>STATION</span><select data-select="station" aria-label="Station" ${activeSiteId ? "" : "disabled"}><option value="">Choose station</option>${stationOptions}</select></label>
-        </div>
-        <div class="selector-actions">
-          <button class="button button-outline button-small" data-action="new-project">＋ Project</button>
-          <button class="button button-outline button-small" data-action="new-site" ${activeProjectId ? "" : "disabled"}>＋ Site</button>
-          <button class="button button-outline button-small" data-action="quick-new-station" ${activeSiteId ? "" : "disabled"}>＋ Station</button>
+          ${selectorRow("PROJECT", "project", projectOptions, "new-project", "Project", selectedProject()?.id)}
+          ${selectorRow("SITE", "site", siteOptions, "new-site", "Site", selectedSite()?.id, !activeProjectId)}
+          ${selectorRow("STATION", "station", stationOptions, "quick-new-station", "Station", selectedStation()?.id, !activeSiteId)}
         </div>
       </section>` : backButton(`Back to ${project.name}`, "back");
     const stationHeading = station ? `${escapeHtml(project.name)} / ${escapeHtml(site.name)} / ${escapeHtml(station.name)}` : "No station selected";
     const acquisitionIntro = station
       ? `${escapeHtml(station.name)} · Target A ${normalizeAzimuth(station.targets.A).toFixed(1)}° · B ${normalizeAzimuth(station.targets.B).toFixed(1)}°`
       : "Your live GPS position appears here. Choose a station to calculate distance and azimuth or record a point.";
-    app.innerHTML = `${captureView ? `<div class="acquisition-topline"><button class="back-button" data-action="browse"><span aria-hidden="true">☷</span> Browse records</button><span class="acquisition-context">${stationHeading}</span></div>` : ""}
+    app.innerHTML = `${captureView ? `<div class="acquisition-topline">
+        <button class="back-button" data-action="browse"><span aria-hidden="true">☷</span> Browse records</button>
+        <span class="acquisition-context">${stationHeading}</span>
+        <div class="acquisition-qr-actions">
+          <button class="button button-outline button-small" data-action="scan-station-qr">Scan QR</button>
+          ${station ? `<button class="button button-outline button-small" data-action="share-station-qr">Share QR</button>` : ""}
+        </div>
+      </div>` : ""}
       ${captureSelector}
       <section class="survey-header acquisition-heading">
         <div><div class="eyebrow">${station ? "POINT ACQUISITION" : "GPS POSITION"}</div><h1 class="survey-title">${station ? escapeHtml(station.name) : "Current position"}</h1>
@@ -1157,6 +1342,8 @@
       else if (action === "browse") { showingBrowse = true; renderProjects(); }
       else if (action === "capture-home") { showingBrowse = false; render(); }
       else if (action === "acquire-points") { showingBrowse = false; activeTarget = "A"; render(); }
+      else if (action === "share-station-qr") showStationQr();
+      else if (action === "scan-station-qr") await scanStationQr();
       else if (action === "home") { showingBrowse = true; activeProjectId = null; activeSiteId = null; activeStationId = null; render(); }
       else if (action === "back") {
         if (activeStationId) {
@@ -1206,6 +1393,7 @@
       else if (action === "share-project") await shareProject();
       else if (action === "import-project") fileInput.click();
       else if (action === "close-modal") target.closest(".modal-backdrop")?.remove();
+      else if (action === "close-qr") stopQrScanner ? stopQrScanner() : target.closest(".qr-modal-backdrop")?.remove();
     } catch (error) {
       showToast(error.message || "Something went wrong.", true);
     }
@@ -1225,6 +1413,7 @@
 
   window.addEventListener("online", updateConnectionStatus);
   window.addEventListener("offline", updateConnectionStatus);
+  window.addEventListener("pagehide", () => stopQrScanner?.());
   navigator.serviceWorker?.addEventListener("message", (event) => {
     if (event.data?.type === "APP_VERSION") {
       document.getElementById("app-version").textContent = `App version ${event.data.version}`;

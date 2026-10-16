@@ -1,9 +1,13 @@
-const CACHE_NAME = "ves-field-v24";
+const CACHE_NAME = "ves-field-v30";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
+  "./vendor/qrcode-generator.js",
+  "./vendor/jsqr.min.js",
+  "./vendor/qrcode-generator-LICENSE.txt",
+  "./vendor/jsqr-LICENSE.txt",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
@@ -11,7 +15,9 @@ const APP_SHELL = [
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(
+    APP_SHELL.map((url) => new Request(url, { cache: "reload" }))
+  )));
   self.skipWaiting();
 });
 

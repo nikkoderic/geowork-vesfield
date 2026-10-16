@@ -106,7 +106,8 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .survey-title { font-size: 30px; margin: 8px 0 5px; letter-spacing: -.05em; }
 .survey-target { color: var(--muted); font-size: 12px; }
 .acquisition-topline { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
-.acquisition-context { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; font: 10px var(--mono); }
+.acquisition-context { flex: 1; min-width: 0; overflow: hidden; color: var(--muted); text-align: right; text-overflow: ellipsis; white-space: nowrap; font: 10px var(--mono); }
+.acquisition-qr-actions { display: flex; flex: 0 0 auto; gap: 6px; }
 .acquisition-heading { margin-bottom: 17px; }
 .acquisition-selector { margin-bottom: 23px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: white; }
 .station-setup-alert { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin: -4px 0 18px; padding: 16px 18px; border: 1px solid #c8d6f7; border-radius: 10px; background: #f2f6ff; }
@@ -123,12 +124,21 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .modal .field-checkbox label { display: flex; align-items: flex-start; gap: 8px; color: var(--ink); font: 12px/1.5 var(--sans); letter-spacing: 0; cursor: pointer; }
 .modal .field-checkbox input { width: 16px; height: 16px; min-height: 0; flex: 0 0 16px; margin: 1px 0 0; padding: 0; border: 0; border-radius: 0; background: transparent; accent-color: var(--green-2); }
 .selector-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
-.selector-field { display: grid; min-width: 0; gap: 6px; }
+.selector-row { display: flex; min-width: 0; align-items: flex-end; gap: 6px; }
+.selector-field { display: grid; flex: 1; min-width: 0; gap: 6px; }
 .selector-field span { color: var(--muted); font: 9px var(--mono); letter-spacing: .08em; }
 .selector-field select { width: 100%; min-width: 0; height: 38px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: white; font-size: 12px; }
 .selector-field select:disabled { color: #9aa1aa; background: #f4f6f9; }
-.selector-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
-.selector-actions .button:disabled { cursor: not-allowed; opacity: .45; transform: none; }
+.selector-uid { display: block; overflow-wrap: anywhere; color: var(--muted); font: 8px/1.25 var(--mono); }
+.selector-add { width: 38px; min-height: 38px; flex: 0 0 38px; padding: 0; font-size: 20px; line-height: 1; }
+.selector-add:disabled { cursor: not-allowed; opacity: .45; transform: none; }
+.qr-modal-backdrop { z-index: 20; }
+.qr-modal { max-height: calc(100vh - 40px); overflow-y: auto; }
+.qr-code { width: min(100%, 320px); margin: 16px auto; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+.qr-code svg { display: block; width: 100%; height: auto; }
+.qr-identifiers { display: grid; gap: 5px; overflow-wrap: anywhere; color: var(--muted); font: 8px/1.45 var(--mono); }
+.qr-scan-video { display: block; width: 100%; max-height: 54vh; margin: 14px auto; border-radius: 9px; background: var(--ink); object-fit: cover; }
+.qr-scan-status { color: var(--green-2); }
 .survey-layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(310px, .85fr); gap: 15px; align-items: start; }
 .survey-layout.position-layout { display: block; max-width: 760px; }
 .readout-panel { padding: 21px; color: white; background: var(--green); border-radius: 13px; }
@@ -238,7 +248,9 @@ button:focus-visible, input:focus-visible, a:focus-visible {
   .page-heading { align-items: flex-start; flex-direction: column; gap: 17px; margin-bottom: 25px; }
   .survey-header { align-items: flex-start; }
   .selector-grid { grid-template-columns: 1fr; }
-  .acquisition-topline { margin-bottom: 14px; }
+  .acquisition-topline { flex-wrap: wrap; margin-bottom: 14px; }
+  .acquisition-context { order: 2; flex: 1 1 100%; text-align: left; }
+  .acquisition-qr-actions { margin-left: auto; }
   .station-setup-alert { align-items: stretch; flex-direction: column; }
   .survey-actions { max-width: 180px; }
   .survey-actions .button { padding: 0 9px; font-size: 10px; }
