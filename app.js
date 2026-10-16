@@ -1,0 +1,679 @@
+(() => {
+  "use strict";
+
+  const DB_NAME = "ves-field";
+  const DB_VERSION = 1;
+  const EXPORT_FORMAT = "ves-field-project";
+  const app = document.getElementById("app");
+  const fileInput = document.getElementById("import-file");
+  const saveStatus = document.getElementById("save-status");
+  const installButton = document.getElementById("install-button");
+  let db;
+  let projects = [];
+  let activeProjectId = null;
+  let activeSiteId = null;
+  let activeStationId = null;
+  const collapsedSiteIds = new Set();
+  let activeTarget = "A";
+  let currentPosition = null;
+  let watchId = null;
+  let deferredInstallPrompt = null;
+
+  const newId = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const now = () => new Date().toISOString();
+  const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[char]);
+  const selectedProject = () => projects.find((project) => project.id === activeProjectId);
+  const selectedSite = () => selectedProject()?.sites.find((site) => site.id === activeSiteId);
+  const selectedStation = () => selectedSite()?.stations.find((station) => station.id === activeStationId);
+
+  function openDatabase() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = () => request.result.createObjectStore("projects", { keyPath: "id" });
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("Could not open local storage."));
+    });
+  }
+
+  function storeProjects() {
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction("projects", "readwrite");
+      const store = transaction.objectStore("projects");
+      store.clear();
+      projects.forEach((project) => store.put(project));
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error || new Error("Could not save project data."));
+      transaction.onabort = () => reject(transaction.error || new Error("Saving project data was interrupted."));
+    });
+  }
+
+  function readProjects() {
+    return new Promise((resolve, reject) => {
+      const request = db.transaction("projects").objectStore("projects").getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("Could not read saved projects."));
+    });
+  }
+
+  async function persist() {
+    try {
+      saveStatus.textContent = "Saving…";
+      await storeProjects();
+      saveStatus.textContent = "Saved locally";
+    } catch (error) {
+      saveStatus.textContent = "Save failed";
+      showToast(`Save failed: ${error.message}`, true);
+      throw error;
+    }
+  }
+
+  function stopLocationWatch() {
+    if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+
+  function ensureLocationWatch() {
+    if (watchId !== null || !selectedStation()) return;
+    if (!navigator.geolocation) {
+      updateLiveReadout("Location is not supported by this browser.");
+      return;
+    }
+    watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        currentPosition = {
+          lat: position.coords.latitude,
+          lon: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          capturedAt: new Date(position.timestamp).toISOString()
+        };
+        updateLiveReadout();
+      },
+      (error) => {
+        const messages = {
+          1: "Location permission was denied.",
+          2: "Your current location is unavailable.",
+          3: "Location request timed out."
+        };
+        updateLiveReadout(messages[error.code] || "Could not read your location.");
+      },
+      { enableHighAccuracy: true, maximumAge: 3000, timeout: 20000 }
+    );
+  }
+
+  function showToast(message, isError = false) {
+    const toast = document.createElement("div");
+    toast.className = `toast${isError ? " error" : ""}`;
+    toast.textContent = message;
+    document.getElementById("toast-region").append(toast);
+    window.setTimeout(() => toast.remove(), 4200);
+  }
+
+  function formatCoord(value) {
+    return Number.isFinite(value) ? value.toFixed(6) : "—";
+  }
+
+  function normalizeAzimuth(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? ((number % 360) + 360) % 360 : 0;
+  }
+
+  function distanceAndBearing(from, to) {
+    if (!from || !to) return null;
+    const radians = (degrees) => degrees * Math.PI / 180;
+    const lat1 = radians(from.lat);
+    const lat2 = radians(to.lat);
+    const deltaLat = radians(to.lat - from.lat);
+    const deltaLon = radians(to.lon - from.lon);
+    const a = Math.sin(deltaLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLon / 2) ** 2;
+    const distance = 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const y = Math.sin(deltaLon) * Math.cos(lat2);
+    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(deltaLon);
+    const bearing = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    return { distance, bearing };
+  }
+
+  function render() {
+    stopLocationWatch();
+    const project = selectedProject();
+    if (!project) {
+      activeProjectId = null;
+      activeSiteId = null;
+      activeStationId = null;
+      renderProjects();
+      return;
+    }
+    const station = selectedStation();
+    if (station) {
+      renderSurvey(project, selectedSite(), station);
+      ensureLocationWatch();
+    } else {
+      activeStationId = null;
+      if (!selectedSite()) renderProject(project);
+      else renderProject(project);
+    }
+  }
+
+  function renderProjects() {
+    const cards = projects.map((project) => {
+      const siteCount = project.sites.length;
+      const stationCount = project.sites.reduce((count, site) => count + site.stations.length, 0);
+      return `<article class="project-card" data-action="open-project" data-id="${escapeHtml(project.id)}" tabindex="0" role="button" aria-label="Open project ${escapeHtml(project.name)}">
+        <div class="project-card-top"><span>FIELD PROJECT</span><span>${siteCount} SITE${siteCount === 1 ? "" : "S"}</span></div>
+        <h2>${escapeHtml(project.name)}</h2><p>${stationCount} VES station${stationCount === 1 ? "" : "s"}</p>
+        <div class="project-card-bottom"><span>Updated ${new Date(project.updatedAt).toLocaleDateString()}</span><span class="project-arrow">↗</span></div>
+      </article>`;
+    }).join("");
+    app.innerHTML = `<section class="page-heading">
+      <div><div class="eyebrow">FIELDWORK / PROJECTS</div><h1 class="page-title">Your field book.</h1>
+        <p class="page-intro">Organize VES stations, capture GPS positions, and keep working when you’re off the grid.</p></div>
+      <button class="button button-primary" data-action="new-project">＋ New project</button>
+    </section>
+    ${projects.length ? `<section class="project-grid">${cards}</section>
+      <div class="toolbar-row"><button class="button button-outline button-small" data-action="import-project">Import project file</button></div>`
+      : `<section class="empty-state"><div class="empty-symbol" aria-hidden="true">⌖</div><h2>Start a field project</h2>
+        <p>Create a project to organize survey sites and VES stations. Your work is stored on this device and available offline.</p>
+        <button class="button button-primary" data-action="new-project">Create your first project</button>
+        <div class="toolbar-row" style="justify-content:center"><button class="button button-outline button-small" data-action="import-project">Import a project file</button></div>
+      </section>`}`;
+  }
+
+  function renderProject(project) {
+    const siteCards = project.sites.map((site, index) => {
+      const collapsed = collapsedSiteIds.has(site.id);
+      return `<article class="site-card">
+      <div class="site-header">
+        <button class="site-heading site-toggle" type="button" data-action="toggle-site" data-id="${escapeHtml(site.id)}" aria-expanded="${!collapsed}">
+          <span class="site-index">${String(index + 1).padStart(2, "0")}</span>
+          <span><span class="site-heading-title">${escapeHtml(site.name)}</span><span class="site-heading-count">${site.stations.length} station${site.stations.length === 1 ? "" : "s"}</span></span>
+          <span class="site-chevron" aria-hidden="true">${collapsed ? "＋" : "−"}</span>
+        </button>
+        <div class="site-actions">
+          <button class="icon-button" data-action="rename-site" data-id="${escapeHtml(site.id)}" aria-label="Rename ${escapeHtml(site.name)}" title="Rename site">✎</button>
+          <button class="button button-outline button-small" data-action="new-station" data-id="${escapeHtml(site.id)}">＋ VES station</button>
+        </div>
+      </div>
+      ${collapsed ? "" : site.stations.length ? `<div class="station-list">${site.stations.map((station) => {
+        const pointCount = station.points.length;
+        const midpoint = station.midpoint ? `${formatCoord(station.midpoint.lat)}, ${formatCoord(station.midpoint.lon)}` : "Midpoint not set";
+        return `<div class="station-row" data-action="open-station" data-site-id="${escapeHtml(site.id)}" data-id="${escapeHtml(station.id)}" tabindex="0" role="button">
+          <div><div class="station-name">${escapeHtml(station.name)}</div><div class="station-sub">${midpoint} · ${pointCount} point${pointCount === 1 ? "" : "s"} recorded</div></div><span class="station-arrow">→</span>
+        </div>`;
+      }).join("")}</div>` : `<div class="inline-empty">No stations yet. Add the first VES station for this site.</div>`}
+    </article>`;
+    }).join("");
+
+    app.innerHTML = `<div class="crumb"><button data-action="home">All projects</button><span class="crumb-sep">/</span><span>${escapeHtml(project.name)}</span></div>
+      <section class="page-heading">
+        <div><div class="eyebrow">FIELD PROJECT</div><h1 class="page-title">${escapeHtml(project.name)}</h1>
+          <div class="project-meta">PROJECT ID · ${escapeHtml(project.id)}</div></div>
+        <div class="toolbar-row">
+          <button class="button button-outline button-small" data-action="rename-project">Rename</button>
+          <button class="button button-outline button-small" data-action="export-csv">Export CSV</button>
+          <button class="button button-primary button-small" data-action="share-project">Share / sync</button>
+        </div>
+      </section>
+      <section><div class="section-head"><h2>Survey sites <span class="project-meta">(${project.sites.length})</span></h2>
+        <button class="button button-outline button-small" data-action="new-site">＋ Add site</button></div>
+        <div class="site-stack">${siteCards || `<div class="empty-state"><div class="empty-symbol">⌖</div><h2>No sites in this project</h2><p>Add a site to start organizing your VES stations.</p><button class="button button-primary" data-action="new-site">Create Site 1</button></div>`}</div>
+      </section>
+      <aside class="sync-note"><strong>Offline by design.</strong> Project data is saved on this device. Share a project file with another device and import it there to merge records by project ID. If your phone offers Bluetooth in its share sheet, you can use it for the transfer. Web apps cannot act as BLE GATT servers for direct phone-to-phone sync.</aside>`;
+  }
+
+  function renderSurvey(project, site, station) {
+    const targetValue = station.targets[activeTarget];
+    const midpoint = station.midpoint;
+    const points = [...station.points].sort((a, b) => b.capturedAt.localeCompare(a.capturedAt));
+    const midpointText = midpoint
+      ? `${formatCoord(midpoint.lat)}, ${formatCoord(midpoint.lon)}`
+      : "Midpoint not set";
+    const pointMarkup = points.length ? points.map((point) => `<div class="point-item">
+      <div class="point-item-top"><strong>POINT ${escapeHtml(point.target)}</strong><span>${new Date(point.capturedAt).toLocaleString()}</span></div>
+      <div class="point-item-detail">${formatCoord(point.lat)}, ${formatCoord(point.lon)} · ${point.distanceMeters == null ? "—" : `${point.distanceMeters.toFixed(1)} m`} · ${point.bearingDegrees == null ? "—" : `${point.bearingDegrees.toFixed(1)}°`}</div>
+    </div>`).join("") : `<div class="inline-empty">No survey points captured yet.</div>`;
+    app.innerHTML = `<div class="crumb"><button data-action="home">All projects</button><span class="crumb-sep">/</span>
+      <button data-action="open-project" data-id="${escapeHtml(project.id)}">${escapeHtml(project.name)}</button><span class="crumb-sep">/</span><span>${escapeHtml(site.name)}</span></div>
+      <section class="survey-header">
+        <div><div class="eyebrow">${escapeHtml(site.name)} / SURVEY STATION</div><h1 class="survey-title">${escapeHtml(station.name)}</h1>
+          <div class="survey-target">Target azimuth · A <strong>${normalizeAzimuth(station.targets.A).toFixed(1)}°</strong> &nbsp; B <strong>${normalizeAzimuth(station.targets.B).toFixed(1)}°</strong></div></div>
+        <button class="button button-outline button-small" data-action="rename-station">✎ Rename station</button>
+      </section>
+      <section class="survey-layout">
+        <div class="readout-panel">
+          <div class="readout-top"><span>LIVE GPS READOUT</span><span class="gps-state waiting" id="gps-state"><span class="status-dot"></span><span id="gps-state-label">Finding GPS…</span></span></div>
+          <div class="readout-grid">
+            <div class="readout-cell"><span class="readout-label">Current position</span><span class="readout-value" id="current-position">—</span></div>
+            <div class="readout-cell"><span class="readout-label">Distance from midpoint</span><span class="readout-value large" id="current-distance">—</span></div>
+            <div class="readout-cell"><span class="readout-label">Current azimuth</span><span class="readout-value" id="current-azimuth">—</span></div>
+            <div class="readout-cell"><span class="readout-label">Target azimuth · <span id="target-label">${activeTarget}</span></span><span class="readout-value large" id="target-azimuth">${normalizeAzimuth(targetValue).toFixed(1)}°</span></div>
+          </div>
+          <div class="readout-hint"><span id="gps-hint">Keep this screen open for continuous GPS updates.</span><button id="gps-retry" class="button button-quiet button-small" data-action="retry-location" hidden>Retry GPS</button></div>
+          <div class="target-selectors" style="margin-top:13px">
+            <button class="target-chip ${activeTarget === "A" ? "active" : ""}" data-action="select-target" data-target="A">TARGET A</button>
+            <button class="target-chip ${activeTarget === "B" ? "active" : ""}" data-action="select-target" data-target="B">TARGET B</button>
+          </div>
+          <button class="button button-lime capture-button" id="capture-button" data-action="capture-point" disabled>◎ &nbsp; Record point for ${activeTarget}</button>
+        </div>
+        <aside class="side-panel">
+          <section class="data-card"><h3>Station midpoint</h3>
+            <div class="coordinate-row"><span>Coordinates</span><span>${midpointText}</span></div>
+            <div class="coordinate-row"><span>Accuracy</span><span>${midpoint?.accuracy == null ? "—" : `${midpoint.accuracy.toFixed(1)} m`}</span></div>
+            <button class="button button-outline button-small" style="margin-top:13px;width:100%" data-action="set-midpoint">${midpoint ? "Update midpoint from GPS" : "Set midpoint from GPS"}</button>
+            <button class="button button-outline button-small" style="margin-top:7px;width:100%" data-action="edit-station">Station settings</button>
+          </section>
+          <section class="data-card"><h3>Recorded points <span class="project-meta">(${points.length})</span></h3><div class="point-list">${pointMarkup}</div></section>
+        </aside>
+      </section>`;
+    updateLiveReadout();
+  }
+
+  function updateLiveReadout(errorMessage = "") {
+    const positionEl = document.getElementById("current-position");
+    if (!positionEl) return;
+    const label = document.getElementById("gps-state-label");
+    const status = document.getElementById("gps-state");
+    const hint = document.getElementById("gps-hint");
+    const capture = document.getElementById("capture-button");
+    const retry = document.getElementById("gps-retry");
+    if (errorMessage) {
+      label.textContent = "GPS unavailable";
+      status.classList.add("waiting");
+      hint.textContent = errorMessage;
+      retry.hidden = !navigator.geolocation;
+      capture.disabled = true;
+      return;
+    }
+    if (!currentPosition) {
+      positionEl.textContent = "Waiting for signal";
+      label.textContent = "Finding GPS…";
+      status.classList.add("waiting");
+      retry.hidden = true;
+      capture.disabled = true;
+      return;
+    }
+    positionEl.textContent = `${formatCoord(currentPosition.lat)}, ${formatCoord(currentPosition.lon)}`;
+    label.textContent = `GPS ±${Math.round(currentPosition.accuracy)} m`;
+    status.classList.remove("waiting");
+    const station = selectedStation();
+    retry.hidden = true;
+    hint.textContent = station?.midpoint
+      ? `Position updated ${new Date(currentPosition.capturedAt).toLocaleTimeString()}.`
+      : "Set the station midpoint before recording survey points.";
+    capture.disabled = !station?.midpoint;
+    const measure = station?.midpoint ? distanceAndBearing(station.midpoint, currentPosition) : null;
+    document.getElementById("current-distance").textContent = measure ? `${measure.distance.toFixed(1)} m` : "Set midpoint";
+    document.getElementById("current-azimuth").textContent = measure ? `${measure.bearing.toFixed(1)}°` : "—";
+  }
+
+  function openModal({ title, description = "", fields, submitLabel = "Save" }) {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `<form class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title">${escapeHtml(title)}</h2>${description ? `<p>${escapeHtml(description)}</p>` : ""}
+      ${fields.map((field) => `<div class="field"><label for="field-${escapeHtml(field.name)}">${escapeHtml(field.label)}</label>
+        <input id="field-${escapeHtml(field.name)}" name="${escapeHtml(field.name)}" type="${field.type || "text"}" value="${escapeHtml(field.value ?? "")}" ${field.required ? "required" : ""} ${field.min !== undefined ? `min="${field.min}"` : ""} ${field.max !== undefined ? `max="${field.max}"` : ""} ${field.step ? `step="${field.step}"` : ""} ${field.autofocus ? "autofocus" : ""}></div>`).join("")}
+      <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">${escapeHtml(submitLabel)}</button></div>
+    </form>`;
+    document.body.append(backdrop);
+    const form = backdrop.querySelector("form");
+    form.querySelector("[autofocus]")?.focus();
+    return new Promise((resolve) => {
+      const close = (value) => { backdrop.remove(); resolve(value); };
+      backdrop.addEventListener("click", (event) => {
+        if (event.target === backdrop || event.target.closest('[data-action="close-modal"]')) close(null);
+      });
+      form.addEventListener("input", (event) => {
+        if (event.target instanceof HTMLInputElement) event.target.setCustomValidity("");
+      });
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const values = Object.fromEntries(new FormData(form).entries());
+        const inputs = [...form.elements].filter((element) => element instanceof HTMLInputElement);
+        for (const input of inputs) {
+          if (!input.reportValidity()) return;
+          if (input.required && input.type === "text" && !input.value.trim()) {
+            input.setCustomValidity("Please enter a name.");
+            input.reportValidity();
+            return;
+          }
+        }
+        close(values);
+      });
+    });
+  }
+
+  async function createProject() {
+    const values = await openModal({ title: "New project", description: "Give this survey project a name.", fields: [{ name: "name", label: "PROJECT NAME", value: "VES Survey 1", required: true, autofocus: true }] });
+    if (!values) return;
+    const project = { id: newId(), name: values.name.trim(), createdAt: now(), updatedAt: now(), sites: [] };
+    projects.push(project);
+    activeProjectId = project.id;
+    await persist();
+    render();
+  }
+
+  async function createSite() {
+    const project = selectedProject();
+    const values = await openModal({ title: "Add survey site", fields: [{ name: "name", label: "SITE NAME", value: `Site ${project.sites.length + 1}`, required: true, autofocus: true }] });
+    if (!values) return;
+    project.sites.push({ id: newId(), name: values.name.trim(), createdAt: now(), updatedAt: now(), stations: [] });
+    project.updatedAt = now();
+    await persist();
+    render();
+  }
+
+  async function createStation(siteId) {
+    const site = selectedProject().sites.find((item) => item.id === siteId);
+    if (!site) return;
+    const values = await openModal({ title: "New VES station", description: "Set the station label and the target azimuth for each assignment.", fields: [
+      { name: "name", label: "STATION NAME", value: `VES ${site.stations.length + 1}`, required: true, autofocus: true },
+      { name: "targetA", label: "TARGET AZIMUTH A (DEGREES)", type: "number", value: "0", min: "0", max: "360", step: "0.1", required: true },
+      { name: "targetB", label: "TARGET AZIMUTH B (DEGREES)", type: "number", value: "180", min: "0", max: "360", step: "0.1", required: true }
+    ] });
+    if (!values) return;
+    site.stations.push({ id: newId(), name: values.name.trim(), createdAt: now(), updatedAt: now(),
+      targets: { A: normalizeAzimuth(values.targetA), B: normalizeAzimuth(values.targetB) }, midpoint: null, points: [] });
+    site.updatedAt = now();
+    selectedProject().updatedAt = now();
+    await persist();
+    activeSiteId = site.id;
+    activeStationId = null;
+    render();
+  }
+
+  async function renameEntity(entity, type) {
+    const values = await openModal({ title: `Rename ${type}`, fields: [{ name: "name", label: `${type.toUpperCase()} NAME`, value: entity.name, required: true, autofocus: true }] });
+    if (!values) return;
+    entity.name = values.name.trim();
+    entity.updatedAt = now();
+    selectedProject().updatedAt = now();
+    await persist();
+    render();
+  }
+
+  async function editStation() {
+    const station = selectedStation();
+    const values = await openModal({ title: "Station settings", fields: [
+      { name: "targetA", label: "TARGET AZIMUTH A (DEGREES)", type: "number", value: String(station.targets.A), min: "0", max: "360", step: "0.1", required: true },
+      { name: "targetB", label: "TARGET AZIMUTH B (DEGREES)", type: "number", value: String(station.targets.B), min: "0", max: "360", step: "0.1", required: true }
+    ] });
+    if (!values) return;
+    station.targets = { A: normalizeAzimuth(values.targetA), B: normalizeAzimuth(values.targetB) };
+    station.updatedAt = now();
+    selectedProject().updatedAt = now();
+    await persist();
+    render();
+  }
+
+  function getFreshPosition() {
+    if (!navigator.geolocation) {
+      showToast("This browser does not support GPS location.", true);
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition((position) => {
+        const value = { lat: position.coords.latitude, lon: position.coords.longitude, accuracy: position.coords.accuracy, capturedAt: new Date(position.timestamp).toISOString() };
+        currentPosition = value;
+        resolve(value);
+      }, (error) => {
+        const message = error.code === 1 ? "Allow location access in your browser settings, then try again." : "Could not get a GPS fix. Move to an open area and try again.";
+        showToast(message, true);
+        resolve(null);
+      }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+    });
+  }
+
+  async function setMidpoint() {
+    const position = await getFreshPosition();
+    if (!position) return;
+    const station = selectedStation();
+    station.midpoint = { ...position };
+    station.updatedAt = now();
+    selectedProject().updatedAt = now();
+    await persist();
+    showToast("Station midpoint saved from GPS.");
+    render();
+  }
+
+  async function capturePoint() {
+    const position = await getFreshPosition();
+    if (!position) return;
+    const station = selectedStation();
+    const measure = station.midpoint ? distanceAndBearing(station.midpoint, position) : null;
+    station.points.push({
+      id: newId(), target: activeTarget, lat: position.lat, lon: position.lon, accuracy: position.accuracy,
+      capturedAt: now(), distanceMeters: measure?.distance ?? null, bearingDegrees: measure?.bearing ?? null,
+      targetAzimuth: normalizeAzimuth(station.targets[activeTarget])
+    });
+    station.updatedAt = now();
+    selectedProject().updatedAt = now();
+    await persist();
+    showToast(`Point recorded for target ${activeTarget}.`);
+    render();
+  }
+
+  function csvCell(value) {
+    const text = value == null ? "" : String(value);
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+
+  function downloadFile(name, content, type) {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function exportCsv() {
+    const project = selectedProject();
+    const header = ["project_id", "project_name", "site_id", "site_name", "station_id", "station_name", "record_type", "point_id", "target", "latitude", "longitude", "accuracy_m", "distance_from_midpoint_m", "azimuth_from_midpoint_deg", "target_azimuth_deg", "target_azimuth_a_deg", "target_azimuth_b_deg", "captured_at"];
+    const rows = [header];
+    project.sites.forEach((site) => site.stations.forEach((station) => {
+      const base = [project.id, project.name, site.id, site.name, station.id, station.name];
+      rows.push([...base, "station", ...Array(8).fill(""), station.targets.A, station.targets.B, ""]);
+      if (station.midpoint) rows.push([...base, "midpoint", "", "", station.midpoint.lat, station.midpoint.lon, station.midpoint.accuracy, "", "", "", station.targets.A, station.targets.B, station.midpoint.capturedAt]);
+      station.points.forEach((point) => rows.push([...base, "survey_point", point.id, point.target, point.lat, point.lon, point.accuracy, point.distanceMeters, point.bearingDegrees, point.targetAzimuth, station.targets.A, station.targets.B, point.capturedAt]));
+    }));
+    const content = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+    downloadFile(`${safeFilename(project.name)}-ves-survey.csv`, `\uFEFF${content}`, "text/csv;charset=utf-8");
+    showToast("Project CSV exported.");
+  }
+
+  function safeFilename(value) {
+    return String(value).trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "ves-project";
+  }
+
+  function exportProjectJson(project) {
+    return JSON.stringify({ format: EXPORT_FORMAT, version: 1, exportedAt: now(), project }, null, 2);
+  }
+
+  async function shareProject() {
+    const project = selectedProject();
+    const file = new File([exportProjectJson(project)], `${safeFilename(project.name)}.vesproject.json`, { type: "application/json" });
+    if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+      try {
+        await navigator.share({ title: `VES Field — ${project.name}`, text: `Project ID: ${project.id}`, files: [file] });
+        showToast("Project shared. Import the file on the other device to merge.");
+      } catch (error) {
+        if (error.name !== "AbortError") showToast(`Could not share project: ${error.message}`, true);
+      }
+      return;
+    }
+    downloadFile(file.name, await file.text(), "application/json");
+    showToast("Project file downloaded. Send it to the other device and import it there.");
+  }
+
+  function mergeProject(incoming) {
+    const existing = projects.find((item) => item.id === incoming.id);
+    if (!existing) {
+      projects.push(incoming);
+      return "added";
+    }
+    const merged = structuredClone(existing);
+    if (Date.parse(incoming.updatedAt) > Date.parse(merged.updatedAt)) {
+      merged.name = incoming.name;
+      merged.updatedAt = incoming.updatedAt;
+    }
+    incoming.sites.forEach((incomingSite) => {
+      let site = merged.sites.find((item) => item.id === incomingSite.id);
+      if (!site) {
+        merged.sites.push(structuredClone(incomingSite));
+        return;
+      }
+      if (Date.parse(incomingSite.updatedAt) > Date.parse(site.updatedAt)) {
+        site.name = incomingSite.name;
+        site.updatedAt = incomingSite.updatedAt;
+      }
+      incomingSite.stations.forEach((incomingStation) => {
+        let station = site.stations.find((item) => item.id === incomingStation.id);
+        if (!station) {
+          site.stations.push(structuredClone(incomingStation));
+          return;
+        }
+        if (Date.parse(incomingStation.updatedAt) > Date.parse(station.updatedAt)) {
+          station.name = incomingStation.name;
+          station.targets = structuredClone(incomingStation.targets);
+          station.midpoint = structuredClone(incomingStation.midpoint);
+          station.updatedAt = incomingStation.updatedAt;
+        } else if (!station.midpoint && incomingStation.midpoint) {
+          station.midpoint = structuredClone(incomingStation.midpoint);
+        }
+        const pointIds = new Set(station.points.map((point) => point.id));
+        incomingStation.points.forEach((point) => {
+          if (!pointIds.has(point.id)) station.points.push(structuredClone(point));
+        });
+      });
+    });
+    merged.updatedAt = new Date(Math.max(Date.parse(existing.updatedAt), Date.parse(incoming.updatedAt))).toISOString();
+    projects[projects.findIndex((item) => item.id === existing.id)] = merged;
+    return "merged";
+  }
+
+  async function importProjectFile(file) {
+    try {
+      const payload = JSON.parse(await file.text());
+      if (payload.format !== EXPORT_FORMAT || payload.version !== 1 || !payload.project || !isValidProject(payload.project)) {
+        throw new Error("This file is not a valid VES Field project export.");
+      }
+      const result = mergeProject(payload.project);
+      activeProjectId = payload.project.id;
+      activeSiteId = null;
+      activeStationId = null;
+      await persist();
+      render();
+      showToast(result === "added" ? "Project imported." : "Project records merged using the shared project ID.");
+    } catch (error) {
+      showToast(`Import failed: ${error.message}`, true);
+    } finally {
+      fileInput.value = "";
+    }
+  }
+
+  function isValidProject(project) {
+    const validCoordinate = (point) => point && Number.isFinite(point.lat) && point.lat >= -90 && point.lat <= 90 &&
+      Number.isFinite(point.lon) && point.lon >= -180 && point.lon <= 180;
+    const validTimestamp = (value) => typeof value === "string" && Number.isFinite(Date.parse(value));
+    if (typeof project.id !== "string" || !project.id || typeof project.name !== "string" || !project.name.trim() ||
+      !validTimestamp(project.createdAt) || !validTimestamp(project.updatedAt) || !Array.isArray(project.sites)) return false;
+    return project.sites.every((site) => site && typeof site.id === "string" && typeof site.name === "string" &&
+      validTimestamp(site.createdAt) && validTimestamp(site.updatedAt) && Array.isArray(site.stations) &&
+      site.stations.every((station) => station && typeof station.id === "string" && typeof station.name === "string" &&
+        validTimestamp(station.createdAt) && validTimestamp(station.updatedAt) &&
+        station.targets && Number.isFinite(station.targets.A) && station.targets.A >= 0 && station.targets.A < 360 &&
+        Number.isFinite(station.targets.B) && station.targets.B >= 0 && station.targets.B < 360 &&
+        Array.isArray(station.points) && (station.midpoint === null || (validCoordinate(station.midpoint) && validTimestamp(station.midpoint.capturedAt))) &&
+        station.points.every((point) => point && typeof point.id === "string" && ["A", "B"].includes(point.target) &&
+          validCoordinate(point) && Number.isFinite(point.accuracy) && point.accuracy >= 0 && validTimestamp(point.capturedAt))));
+  }
+
+  app.addEventListener("click", async (event) => {
+    const target = event.target.closest("[data-action]");
+    if (!target) return;
+    const action = target.dataset.action;
+    try {
+      if (action === "new-project") await createProject();
+      else if (action === "home") { activeProjectId = null; activeSiteId = null; activeStationId = null; render(); }
+      else if (action === "open-project") { activeProjectId = target.dataset.id; activeSiteId = null; activeStationId = null; render(); }
+      else if (action === "new-site") await createSite();
+      else if (action === "new-station") await createStation(target.dataset.id);
+      else if (action === "rename-project") await renameEntity(selectedProject(), "project");
+      else if (action === "rename-site") { event.stopPropagation(); const site = selectedProject().sites.find((item) => item.id === target.dataset.id); await renameEntity(site, "site"); }
+      else if (action === "rename-station") await renameEntity(selectedStation(), "station");
+      else if (action === "toggle-site") {
+        if (collapsedSiteIds.has(target.dataset.id)) collapsedSiteIds.delete(target.dataset.id);
+        else collapsedSiteIds.add(target.dataset.id);
+        renderProject(selectedProject());
+      }
+      else if (action === "open-station") { activeSiteId = target.dataset.siteId; activeStationId = target.dataset.id; currentPosition = null; activeTarget = "A"; render(); }
+      else if (action === "select-target") { activeTarget = target.dataset.target; renderSurvey(selectedProject(), selectedSite(), selectedStation()); ensureLocationWatch(); }
+      else if (action === "set-midpoint") await setMidpoint();
+      else if (action === "capture-point") await capturePoint();
+      else if (action === "retry-location") {
+        stopLocationWatch();
+        currentPosition = null;
+        updateLiveReadout();
+        ensureLocationWatch();
+      }
+      else if (action === "edit-station") await editStation();
+      else if (action === "export-csv") exportCsv();
+      else if (action === "share-project") await shareProject();
+      else if (action === "import-project") fileInput.click();
+      else if (action === "close-modal") target.closest(".modal-backdrop")?.remove();
+    } catch (error) {
+      showToast(error.message || "Something went wrong.", true);
+    }
+  });
+
+  app.addEventListener("keydown", (event) => {
+    if ((event.key === "Enter" || event.key === " ") && event.target.matches('[role="button"][data-action]')) {
+      event.preventDefault();
+      event.target.click();
+    }
+  });
+
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    if (file) importProjectFile(file);
+  });
+
+  window.addEventListener("online", updateConnectionStatus);
+  window.addEventListener("offline", updateConnectionStatus);
+
+  function updateConnectionStatus() {
+    document.getElementById("connection-status").innerHTML = `<span class="status-dot"></span> ${navigator.onLine ? "Online · data stays local" : "Offline ready"}`;
+  }
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    installButton.hidden = false;
+  });
+  installButton.addEventListener("click", async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    installButton.hidden = true;
+  });
+
+  async function start() {
+    try {
+      if (!("indexedDB" in window)) throw new Error("This browser does not support offline project storage.");
+      db = await openDatabase();
+      projects = await readProjects();
+      updateConnectionStatus();
+      render();
+      if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+        navigator.serviceWorker.register("./sw.js").catch((error) => showToast(`Offline app setup failed: ${error.message}`, true));
+      }
+    } catch (error) {
+      app.innerHTML = `<div class="load-error"><h1>Could not open VES Field</h1><p>${escapeHtml(error.message)}</p></div>`;
+    }
+  }
+
+  start();
+})();

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#10251f">
+    <meta name="description" content="Offline-first GPS field notes for VES surveys.">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+    <title>VES Field</title>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="./" aria-label="VES Field home">
+          <span class="brand-mark" aria-hidden="true">V</span>
+          <span>VES <span class="brand-light">FIELD</span></span>
+        </a>
+        <div class="topbar-right">
+          <span id="connection-status" class="connection-status"><span class="status-dot"></span> Offline ready</span>
+          <button id="install-button" class="button button-quiet install-button" type="button" hidden>Install app</button>
+        </div>
+      </header>
+      <main id="app" class="main-content" aria-live="polite"></main>
+      <footer class="app-footer">
+        <span>Field notes stay on this device.</span>
+        <span id="save-status">Saved locally</span>
+      </footer>
+    </div>
+    <input id="import-file" type="file" accept=".json,application/json" hidden>
+    <div id="toast-region" class="toast-region" aria-live="assertive"></div>
+    <script src="./app.js" defer></script>
+  </body>
+</html>
