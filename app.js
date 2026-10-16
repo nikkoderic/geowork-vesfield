@@ -6,8 +6,9 @@
   const EXPORT_FORMAT = "ves-field-project";
   const app = document.getElementById("app");
   const fileInput = document.getElementById("import-file");
-  const saveStatus = document.getElementById("save-status");
   const installButton = document.getElementById("install-button");
+  const updateButton = document.getElementById("update-button");
+  let serviceWorkerRegistration = null;
   let db;
   let projects = [];
   let activeProjectId = null;
@@ -17,9 +18,10 @@
   let activeTarget = "A";
   let currentPosition = null;
   let watchId = null;
-  let mapMode = "north";
   let compassHeading = null;
   let compassListening = false;
+  let compassNeedsPermission = false;
+  let compassError = "";
   let lastOrientationAt = 0;
   let deferredInstallPrompt = null;
 
@@ -63,11 +65,8 @@
 
   async function persist() {
     try {
-      saveStatus.textContent = "Saving…";
       await storeProjects();
-      saveStatus.textContent = "Saved locally";
     } catch (error) {
-      saveStatus.textContent = "Save failed";
       showToast(`Save failed: ${error.message}`, true);
       throw error;
     }
@@ -85,12 +84,33 @@
     compassListening = false;
   }
 
-  async function enableCompass() {
+  function startCompassWatch() {
+    const orientationEvent = window.DeviceOrientationEvent;
+    if (orientationEvent && typeof orientationEvent.requestPermission === "function") {
+      compassNeedsPermission = true;
+      compassError = "";
+      updateFieldMap();
+      return;
+    }
+    compassNeedsPermission = false;
+    compassError = "";
+    attachCompassListeners();
+    updateFieldMap();
+  }
+
+  async function requestCompassPermission() {
     const orientationEvent = window.DeviceOrientationEvent;
     if (orientationEvent && typeof orientationEvent.requestPermission === "function") {
       const permission = await orientationEvent.requestPermission();
       if (permission !== "granted") throw new Error("Compass permission was denied.");
     }
+    compassNeedsPermission = false;
+    compassError = "";
+    attachCompassListeners();
+    updateFieldMap();
+  }
+
+  function attachCompassListeners() {
     if (!compassListening) {
       window.addEventListener("deviceorientation", updateCompassHeading);
       window.addEventListener("deviceorientationabsolute", updateCompassHeading);
@@ -179,6 +199,9 @@
     const project = selectedProject();
     if (!project) {
       stopCompassWatch();
+      compassHeading = null;
+      compassNeedsPermission = false;
+      compassError = "";
       activeProjectId = null;
       activeSiteId = null;
       activeStationId = null;
@@ -189,8 +212,12 @@
     if (station) {
       renderSurvey(project, selectedSite(), station);
       ensureLocationWatch();
+      startCompassWatch();
     } else {
       stopCompassWatch();
+      compassHeading = null;
+      compassNeedsPermission = false;
+      compassError = "";
       activeStationId = null;
       renderProject(project);
     }
@@ -214,7 +241,7 @@
     ${projects.length ? `<section class="project-grid">${cards}</section>
       <div class="toolbar-row"><button class="button button-outline button-small" data-action="import-project">Import project file</button></div>`
       : `<section class="empty-state"><div class="empty-symbol" aria-hidden="true">⌖</div><h2>Start a field project</h2>
-        <p>Create a project to organize survey sites and VES stations. Your work is stored on this device and available offline.</p>
+        <p>Create a project to organize survey sites and VES stations.</p>
         <button class="button button-primary" data-action="new-project">Create your first project</button>
         <div class="toolbar-row" style="justify-content:center"><button class="button button-outline button-small" data-action="import-project">Import a project file</button></div>
       </section>`}`;
@@ -264,7 +291,7 @@
         <button class="button button-outline button-small" data-action="new-site">＋ Add site</button></div>
         <div class="site-stack">${siteCards || `<div class="empty-state"><div class="empty-symbol">⌖</div><h2>No sites in this project</h2><p>Add a site to start organizing your VES stations.</p><button class="button button-primary" data-action="new-site">Create Site 1</button></div>`}</div>
       </section>
-      <aside class="sync-note"><strong>Offline by design.</strong> Project data is saved on this device. Share a project file with another device and import it there to merge records by project ID. If your phone offers Bluetooth in its share sheet, you can use it for the transfer. Web apps cannot act as BLE GATT servers for direct phone-to-phone sync.</aside>`;
+      `;
   }
 
   function renderSurvey(project, site, station) {
@@ -275,7 +302,7 @@
       ? `${formatCoord(midpoint.lat)}, ${formatCoord(midpoint.lon)}`
       : "Midpoint not set";
     const pointMarkup = points.length ? points.map((point) => `<div class="point-item">
-      <div class="point-item-top"><strong>POINT ${escapeHtml(point.target)}</strong><span>${new Date(point.capturedAt).toLocaleString()}</span><button class="point-delete" data-action="delete-point" data-id="${escapeHtml(point.id)}" aria-label="Delete point ${escapeHtml(point.target)} recorded ${new Date(point.capturedAt).toLocaleString()}" title="Delete point">×</button></div>
+      <div class="point-item-top"><strong class="point-target-${point.target.toLowerCase()}">POINT ${escapeHtml(point.target)}</strong><span>${new Date(point.capturedAt).toLocaleString()}</span><button class="point-delete" data-action="delete-point" data-id="${escapeHtml(point.id)}" aria-label="Delete point ${escapeHtml(point.target)} recorded ${new Date(point.capturedAt).toLocaleString()}" title="Delete point">×</button></div>
       <div class="point-item-detail">${formatCoord(point.lat)}, ${formatCoord(point.lon)} · ${point.distanceMeters == null ? "—" : `${point.distanceMeters.toFixed(1)} m`} · ${point.bearingDegrees == null ? "—" : `${point.bearingDegrees.toFixed(1)}°`}</div>
     </div>`).join("") : `<div class="inline-empty">No survey points captured yet.</div>`;
     app.innerHTML = `${backButton(`Back to ${project.name}`, "back")}
@@ -296,10 +323,10 @@
           </div>
           <div class="readout-hint"><span id="gps-hint">Keep this screen open for continuous GPS updates.</span><button id="gps-retry" class="button button-quiet button-small" data-action="retry-location" hidden>Retry GPS</button></div>
           <div class="target-selectors" style="margin-top:13px">
-            <button class="target-chip ${activeTarget === "A" ? "active" : ""}" data-action="select-target" data-target="A">TARGET A</button>
-            <button class="target-chip ${activeTarget === "B" ? "active" : ""}" data-action="select-target" data-target="B">TARGET B</button>
+            <button class="target-chip target-chip-a ${activeTarget === "A" ? "active" : ""}" data-action="select-target" data-target="A">TARGET A</button>
+            <button class="target-chip target-chip-b ${activeTarget === "B" ? "active" : ""}" data-action="select-target" data-target="B">TARGET B</button>
           </div>
-          <button class="button button-lime capture-button" id="capture-button" data-action="capture-point" disabled>◎ &nbsp; Record point for ${activeTarget}</button>
+          <button class="button button-accent button-target-${activeTarget.toLowerCase()} capture-button" id="capture-button" data-action="capture-point" disabled>◎ &nbsp; Record point for ${activeTarget}</button>
         </div>
         <aside class="side-panel">
           ${renderDirectionMap(station)}
@@ -318,14 +345,13 @@
   function renderDirectionMap(station) {
     return `<section class="map-card">
       <div class="map-card-header">
-        <div><span class="map-kicker">LOCAL FIELD MAP</span><h3>Position &amp; target directions</h3></div>
-        <span class="map-compass-status" id="compass-status">North up</span>
+        <div><span class="map-kicker">FIELD MAP</span><h3>Position &amp; target directions</h3></div>
+        <div class="map-compass-control">
+          <span class="map-compass-status" id="compass-status"></span>
+          <button class="compass-enable" id="compass-enable" data-action="enable-compass" hidden>Enable compass</button>
+        </div>
       </div>
-      <div class="map-controls" role="group" aria-label="Map orientation">
-        <button class="map-mode-button ${mapMode === "north" ? "active" : ""}" data-action="set-map-mode" data-mode="north" aria-pressed="${mapMode === "north"}">North up</button>
-        <button class="map-mode-button ${mapMode === "follow" ? "active" : ""}" data-action="set-map-mode" data-mode="follow" aria-pressed="${mapMode === "follow"}">Follow compass</button>
-      </div>
-      <div class="direction-map" role="img" aria-label="Diagram showing your position relative to the VES station midpoint and target azimuths">
+      <div class="direction-map" role="img" aria-label="Field map showing the midpoint, current position and heading, recorded points, and selected target direction">
         <svg viewBox="0 0 300 300" aria-hidden="true">
           <defs>
             <clipPath id="map-plot-clip"><rect x="40" y="20" width="240" height="240" rx="2"></rect></clipPath>
@@ -340,6 +366,9 @@
               <line id="map-target-b" class="map-target-ray" x1="160" y1="140" x2="160" y2="25" marker-end="url(#map-arrow-b)"></line>
               <g id="map-recorded-points"></g>
               <line id="map-position-trail" class="map-position-trail" x1="160" y1="140" x2="160" y2="140"></line>
+              <g id="map-current-heading" hidden>
+                <path class="map-heading-wedge" d="M0 -22L-5 -8Q0 -11 5 -8Z"></path>
+              </g>
               <circle id="map-current-position" class="map-current-position" cx="160" cy="140" r="6" hidden></circle>
             </g>
             <g class="map-north-needle">
@@ -348,6 +377,14 @@
           </g>
           <rect class="map-border" x="40" y="20" width="240" height="240" rx="2"></rect>
           <circle class="map-midpoint" cx="160" cy="140" r="5"></circle>
+          <g class="map-target-compass">
+            <circle cx="252" cy="53" r="22"></circle>
+            <text x="252" y="36" text-anchor="middle" class="target-compass-north">N</text>
+            <g id="map-target-compass-arrow">
+              <path class="target-compass-arrow" d="M252 40L247 57L252 54L257 57Z"></path>
+            </g>
+            <text id="map-target-compass-label" x="252" y="83" text-anchor="middle" class="target-compass-label">A · —°</text>
+          </g>
           <text class="map-axis-label map-north-label" x="160" y="14" text-anchor="middle" id="map-north-label">N</text>
           <g id="map-axis-labels">
             <text class="map-axis-label" x="286" y="263" text-anchor="end">E</text>
@@ -363,7 +400,7 @@
         <span class="${activeTarget === "A" ? "selected" : ""}"><i class="legend-target-a"></i>A direction</span>
         <span class="${activeTarget === "B" ? "selected" : ""}"><i class="legend-target-b"></i>B direction</span>
         <span><i class="legend-recorded"></i>Recorded points</span>
-        <span><i class="legend-current"></i>Your position</span>
+        <span><i class="legend-current"></i>Position / heading</span>
       </div>
       <div class="map-summary" id="map-summary">Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north</div>
     </section>`;
@@ -393,12 +430,11 @@
     const centerY = 140;
     const plotHalf = 116;
     const pixelsPerMeter = plotHalf / extentMeters;
-    const layerRotation = mapMode === "follow" && compassHeading !== null ? -compassHeading : 0;
-    rotatingLayer.setAttribute("transform", `rotate(${layerRotation} ${centerX} ${centerY})`);
+    rotatingLayer.removeAttribute("transform");
     const northLabel = document.getElementById("map-north-label");
-    northLabel.setAttribute("transform", `rotate(${layerRotation} ${centerX} ${centerY})`);
-    document.getElementById("map-axis-labels").setAttribute("transform", `rotate(${layerRotation} ${centerX} ${centerY})`);
-    document.getElementById("map-axis-ticks").setAttribute("transform", `rotate(${layerRotation} ${centerX} ${centerY})`);
+    northLabel.removeAttribute("transform");
+    document.getElementById("map-axis-labels").removeAttribute("transform");
+    document.getElementById("map-axis-ticks").removeAttribute("transform");
     const gridLines = [];
     const axisTicks = [];
     const gridCount = Math.floor(extentMeters / gridStepMeters);
@@ -429,6 +465,13 @@
     };
     setRay("map-target-a", targetA, "A");
     setRay("map-target-b", targetB, "B");
+    const selectedBearing = activeTarget === "A" ? targetA : targetB;
+    document.getElementById("map-target-compass-arrow").setAttribute(
+      "transform",
+      `rotate(${selectedBearing} 252 53)`
+    );
+    document.querySelector(".target-compass-arrow").classList.toggle("target-b", activeTarget === "B");
+    document.getElementById("map-target-compass-label").textContent = `${activeTarget} · ${selectedBearing.toFixed(0)}°`;
     const recordedMarkup = recordedPoints.map(({ point: savedPoint, measure }) => {
       const radians = measure.bearing * Math.PI / 180;
       const x = centerX + Math.sin(radians) * measure.distance * pixelsPerMeter;
@@ -448,9 +491,13 @@
       trail.setAttribute("x2", String(x));
       trail.setAttribute("y2", String(y));
       trail.removeAttribute("hidden");
+      const heading = document.getElementById("map-current-heading");
+      heading.setAttribute("transform", `translate(${x} ${y}) rotate(${compassHeading ?? 0})`);
+      heading.toggleAttribute("hidden", compassHeading === null);
     } else {
       position.setAttribute("hidden", "");
       trail.setAttribute("hidden", "");
+      document.getElementById("map-current-heading").setAttribute("hidden", "");
     }
     document.getElementById("map-grid-spacing").textContent = `Grid ${gridStepMeters} m`;
     document.getElementById("map-scale-label").textContent = `±${extentMeters} m`;
@@ -461,9 +508,10 @@
       : station.midpoint ? `Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north · Waiting for GPS`
         : `Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north · Set midpoint to plot position`;
     const compassStatus = document.getElementById("compass-status");
-    if (mapMode === "north") compassStatus.textContent = "North up";
-    else if (compassHeading === null) compassStatus.textContent = "Waiting for compass";
-    else compassStatus.textContent = `Heading ${compassHeading.toFixed(0)}°`;
+    compassStatus.textContent = compassHeading !== null
+      ? `Compass ${compassHeading.toFixed(0)}°`
+      : compassError || (compassNeedsPermission ? "Heading unavailable" : "Compass unavailable");
+    document.getElementById("compass-enable").hidden = compassHeading !== null || !compassNeedsPermission;
   }
 
   function updateLiveReadout(errorMessage = "") {
@@ -653,23 +701,6 @@
     await persist();
     render();
     showToast("Recorded point deleted.");
-  }
-
-  async function setMapMode(mode) {
-    if (mode === "north") {
-      mapMode = "north";
-      stopCompassWatch();
-    } else {
-      mapMode = "follow";
-      try {
-        await enableCompass();
-      } catch (error) {
-        mapMode = "north";
-        renderSurvey(selectedProject(), selectedSite(), selectedStation());
-        throw error;
-      }
-    }
-    renderSurvey(selectedProject(), selectedSite(), selectedStation());
   }
 
   async function editStation() {
@@ -923,7 +954,15 @@
       }
       else if (action === "open-station") { activeSiteId = target.dataset.siteId; activeStationId = target.dataset.id; currentPosition = null; activeTarget = "A"; render(); }
       else if (action === "select-target") { activeTarget = target.dataset.target; renderSurvey(selectedProject(), selectedSite(), selectedStation()); ensureLocationWatch(); }
-      else if (action === "set-map-mode") await setMapMode(target.dataset.mode);
+      else if (action === "enable-compass") {
+        try {
+          await requestCompassPermission();
+        } catch (error) {
+          compassError = error.message || "Compass permission was denied.";
+          updateFieldMap();
+          throw error;
+        }
+      }
       else if (action === "set-midpoint") await setMidpoint();
       else if (action === "capture-point") await capturePoint();
       else if (action === "retry-location") {
@@ -961,7 +1000,7 @@
   });
 
   function updateConnectionStatus() {
-    document.getElementById("connection-status").innerHTML = `<span class="status-dot"></span> ${navigator.onLine ? "Online · data stays local" : "Offline ready"}`;
+    document.getElementById("connection-status").innerHTML = `<span class="status-dot"></span> ${navigator.onLine ? "Online" : "Offline ready"}`;
   }
 
   window.addEventListener("beforeinstallprompt", (event) => {
@@ -977,6 +1016,79 @@
     installButton.hidden = true;
   });
 
+  function waitForWorkerActivation(worker) {
+    if (worker.state === "activated") return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const timeoutId = window.setTimeout(() => {
+        worker.removeEventListener("statechange", onStateChange);
+        reject(new Error("The update took too long to activate. Please try again."));
+      }, 15000);
+      function onStateChange() {
+        if (worker.state === "activated") {
+          window.clearTimeout(timeoutId);
+          worker.removeEventListener("statechange", onStateChange);
+          resolve();
+        } else if (worker.state === "redundant") {
+          window.clearTimeout(timeoutId);
+          worker.removeEventListener("statechange", onStateChange);
+          reject(new Error("The browser could not install the update."));
+        }
+      }
+      worker.addEventListener("statechange", onStateChange);
+      onStateChange();
+    });
+  }
+
+  async function updateApp() {
+    if (!serviceWorkerRegistration) throw new Error("App updates are not available in this browser.");
+    if (!navigator.onLine) throw new Error("Connect to the internet to check for app updates.");
+
+    const previousWorker = serviceWorkerRegistration.active;
+    const controllerBeforeUpdate = navigator.serviceWorker.controller;
+    updateButton.disabled = true;
+    updateButton.textContent = "Checking…";
+    try {
+      await serviceWorkerRegistration.update();
+      const installingWorker = serviceWorkerRegistration.installing;
+      const waitingWorker = serviceWorkerRegistration.waiting;
+      if (waitingWorker) waitingWorker.postMessage({ type: "SKIP_WAITING" });
+      const worker = installingWorker || waitingWorker;
+      if (worker) await waitForWorkerActivation(worker);
+
+      if (serviceWorkerRegistration.active === previousWorker) {
+        showToast("VES Field is already up to date.");
+        return;
+      }
+
+      showToast("Update installed. Reloading VES Field…");
+      if (controllerBeforeUpdate && navigator.serviceWorker.controller === controllerBeforeUpdate) {
+        const controllerChanged = new Promise((resolve) => {
+          navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true });
+        });
+        if (navigator.serviceWorker.controller !== controllerBeforeUpdate) {
+          window.location.reload();
+          return;
+        }
+        await Promise.race([
+          controllerChanged,
+          new Promise((resolve) => window.setTimeout(resolve, 5000))
+        ]);
+      }
+      window.location.reload();
+    } finally {
+      updateButton.disabled = false;
+      updateButton.textContent = "↻ Update app";
+    }
+  }
+
+  updateButton.addEventListener("click", async () => {
+    try {
+      await updateApp();
+    } catch (error) {
+      showToast(`App update failed: ${error.message}`, true);
+    }
+  });
+
   async function start() {
     try {
       if (!("indexedDB" in window)) throw new Error("This browser does not support offline project storage.");
@@ -985,7 +1097,10 @@
       updateConnectionStatus();
       render();
       if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
-        navigator.serviceWorker.register("./sw.js").catch((error) => showToast(`Offline app setup failed: ${error.message}`, true));
+        navigator.serviceWorker.register("./sw.js").then((registration) => {
+          serviceWorkerRegistration = registration;
+          updateButton.hidden = false;
+        }).catch((error) => showToast(`Offline app setup failed: ${error.message}`, true));
       }
     } catch (error) {
       app.innerHTML = `<div class="load-error"><h1>Could not open VES Field</h1><p>${escapeHtml(error.message)}</p></div>`;
