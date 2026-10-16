@@ -356,7 +356,7 @@
         <div class="survey-actions">
           <button class="button button-outline button-small" data-action="rename-station">✎ Rename station</button>
           <button class="button button-danger button-small" data-action="delete-station">Delete station</button>
-          <button class="button button-primary" data-action="acquire-points">◎ Acquire points</button>
+          <button class="button button-primary button-small" data-action="acquire-points">◎ Acquire points</button>
         </div>
       </section>
       <section class="data-card station-browser-card">
@@ -752,11 +752,14 @@
           <circle class="map-midpoint" cx="160" cy="140" r="5"></circle>
           <g class="map-target-compass">
             <circle cx="252" cy="53" r="22"></circle>
-            <path class="target-compass-forward" d="M252 28L248 35L256 35Z"></path>
-            <text id="map-compass-north-label" x="252" y="37" text-anchor="middle" class="target-compass-north">N</text>
+            <path class="target-compass-forward" d="M252 42L248 51L252 49L256 51Z"></path>
             <g id="map-target-compass-arrow">
-              <path class="target-compass-arrow" d="M252 40L247 57L252 54L257 57Z"></path>
+              <path class="target-compass-arrow" d="M252 31L247 41L252 38L257 41Z"></path>
             </g>
+            <g id="map-compass-north-arrow">
+              <path class="target-compass-north-arrow" d="M252 31L247 41L252 38L257 41Z"></path>
+            </g>
+            <text id="map-compass-north-label" x="252" y="37" text-anchor="middle" class="target-compass-north">N</text>
             <text id="map-target-compass-label" x="252" y="83" text-anchor="middle" class="target-compass-label">A · —°</text>
           </g>
           <text class="map-axis-label map-north-label" x="160" y="14" text-anchor="middle" id="map-north-label">N</text>
@@ -842,9 +845,13 @@
     const selectedBearing = activeTarget === "A" ? targetA : targetB;
     const headingOffset = compassHeading ?? 0;
     const northAngle = -headingOffset * Math.PI / 180;
+    document.getElementById("map-compass-north-arrow").setAttribute(
+      "transform",
+      `rotate(${-headingOffset} 252 53)`
+    );
     const northMarker = document.getElementById("map-compass-north-label");
-    northMarker.setAttribute("x", String(252 + Math.sin(northAngle) * 15));
-    northMarker.setAttribute("y", String(53 - Math.cos(northAngle) * 15 + 2.5));
+    northMarker.setAttribute("x", String(252 + Math.sin(northAngle) * 28));
+    northMarker.setAttribute("y", String(53 - Math.cos(northAngle) * 28 + 2.5));
     northMarker.textContent = compassHeadingAbsolute ? "N" : "N?";
     document.getElementById("map-target-compass-arrow").setAttribute(
       "transform",
