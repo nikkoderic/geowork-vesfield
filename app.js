@@ -752,13 +752,13 @@
           <circle class="map-midpoint" cx="160" cy="140" r="5"></circle>
           <g class="map-target-compass">
             <circle cx="252" cy="53" r="22"></circle>
-            <path class="target-compass-forward" d="M252 42L248 51L252 49L256 51Z"></path>
-            <g id="map-target-compass-arrow">
-              <path class="target-compass-arrow" d="M252 31L247 41L252 38L257 41Z"></path>
-            </g>
             <g id="map-compass-north-arrow">
               <path class="target-compass-north-arrow" d="M252 31L247 41L252 38L257 41Z"></path>
             </g>
+            <g id="map-target-compass-arrow">
+              <path class="target-compass-arrow" d="M252 34L246 46L252 43L258 46Z"></path>
+            </g>
+            <path class="target-compass-forward" d="M252 35L244 61L252 56L260 61Z"></path>
             <text id="map-compass-north-label" x="252" y="37" text-anchor="middle" class="target-compass-north">N</text>
             <text id="map-target-compass-label" x="252" y="83" text-anchor="middle" class="target-compass-label">A · —°</text>
           </g>
@@ -779,7 +779,6 @@
         <span><i class="legend-recorded"></i>Recorded points</span>
         <span><i class="legend-current"></i>Position / heading</span>
       </div>
-      <div class="map-summary" id="map-summary">Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north</div>
     </section>`;
   }
 
@@ -890,10 +889,6 @@
     document.getElementById("map-scale-label").textContent = `±${extentMeters} m`;
     const svgWidth = document.querySelector(".direction-map svg").getBoundingClientRect().width;
     document.getElementById("map-scale-line").style.width = `${gridStepMeters * pixelsPerMeter * svgWidth / 300}px`;
-    document.getElementById("map-summary").textContent = point
-      ? `You are ${point.distance.toFixed(1)} m from station · ${point.bearing.toFixed(1)}° from station · Target ${activeTarget} ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}°`
-      : station.midpoint ? `Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north · Waiting for GPS`
-        : `Target ${activeTarget} · ${normalizeAzimuth(station.targets[activeTarget]).toFixed(1)}° from north · Set station coordinates to plot position`;
     const compassStatus = document.getElementById("compass-status");
     compassStatus.textContent = compassHeading !== null
       ? `${compassHeadingAbsolute ? "Compass" : "Heading ~"} ${compassHeading.toFixed(0)}°`
