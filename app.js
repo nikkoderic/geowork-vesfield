@@ -367,8 +367,7 @@
         <button class="button button-outline button-small station-coordinate-action" data-action="set-station-coordinates">${station.midpoint ? "Update station coordinates" : "Set station coordinates from GPS"}</button>
       </section>
       <section class="data-card station-browser-points">
-        <div class="section-head"><h2>Acquired points <span class="project-meta">(${station.points.length})</span></h2>
-          <button class="button button-primary button-small" data-action="acquire-points">◎ Acquire points</button></div>
+        <div class="section-head"><h2>Acquired points <span class="project-meta">(${station.points.length})</span></h2></div>
         <div class="point-list">${points}</div>
       </section>`;
     updateGpsOperation();
@@ -1226,6 +1225,15 @@
 
   window.addEventListener("online", updateConnectionStatus);
   window.addEventListener("offline", updateConnectionStatus);
+  navigator.serviceWorker?.addEventListener("message", (event) => {
+    if (event.data?.type === "APP_VERSION") {
+      document.getElementById("app-version").textContent = `App version ${event.data.version}`;
+    }
+  });
+  navigator.serviceWorker?.addEventListener("controllerchange", async () => {
+    const registration = await navigator.serviceWorker.getRegistration();
+    (navigator.serviceWorker.controller || registration?.active)?.postMessage({ type: "GET_APP_VERSION" });
+  });
   window.addEventListener("resize", () => {
     if (selectedStation()) updateFieldMap();
   });
@@ -1328,9 +1336,12 @@
       updateConnectionStatus();
       render();
       if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
-        navigator.serviceWorker.register("./sw.js").then((registration) => {
+        navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then((registration) => {
           serviceWorkerRegistration = registration;
           updateButton.hidden = false;
+          navigator.serviceWorker.ready.then((readyRegistration) => {
+            (navigator.serviceWorker.controller || readyRegistration.active)?.postMessage({ type: "GET_APP_VERSION" });
+          });
         }).catch((error) => showToast(`Offline app setup failed: ${error.message}`, true));
       }
     } catch (error) {

@@ -42,6 +42,7 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .connection-status { display: inline-flex; gap: 8px; align-items: center; color: #d1ddd3; font-size: 12px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 0 3px #00bfe820; }
 .main-content { width: min(1160px, calc(100% - 48px)); margin: 0 auto; flex: 1; padding: 48px 0 68px; }
+.app-footer { padding: 12px 18px max(14px, env(safe-area-inset-bottom)); color: var(--muted); text-align: center; font: 9px var(--mono); letter-spacing: .04em; }
 .eyebrow { color: var(--green-2); font: 500 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; }
 .page-title { margin: 8px 0 8px; font-size: clamp(30px, 5vw, 46px); line-height: 1.08; letter-spacing: -.055em; }
 .page-intro { color: var(--muted); max-width: 580px; line-height: 1.65; font-size: 14px; margin: 0; }

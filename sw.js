@@ -1,4 +1,4 @@
-const CACHE_NAME = "ves-field-v22";
+const CACHE_NAME = "ves-field-v24";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -17,6 +17,9 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
+  if (event.data?.type === "GET_APP_VERSION") {
+    event.source?.postMessage({ type: "APP_VERSION", version: CACHE_NAME.replace(/^ves-field-/, "") });
+  }
 });
 
 self.addEventListener("activate", (event) => {
