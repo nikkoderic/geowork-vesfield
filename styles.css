@@ -116,7 +116,6 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .gps-operation-status { display: flex; align-items: center; gap: 9px; margin: 12px 0; color: #d6e1f5; font-size: 11px; }
 .gps-operation-status::before { width: 13px; height: 13px; flex: 0 0 13px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; content: ""; animation: gps-spin .8s linear infinite; }
 .data-card .gps-operation-status { color: var(--green-2); }
-.station-coordinate-action { width: 100%; margin-top: 13px; }
 .station-browser-card, .station-browser-points { margin-bottom: 14px; }
 .station-browser-points .point-list { max-height: none; }
 @keyframes gps-spin { to { transform: rotate(360deg); } }
@@ -124,13 +123,13 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .modal .field-checkbox label { display: flex; align-items: flex-start; gap: 8px; color: var(--ink); font: 12px/1.5 var(--sans); letter-spacing: 0; cursor: pointer; }
 .modal .field-checkbox input { width: 16px; height: 16px; min-height: 0; flex: 0 0 16px; margin: 1px 0 0; padding: 0; border: 0; border-radius: 0; background: transparent; accent-color: var(--green-2); }
 .selector-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
-.selector-row { display: flex; min-width: 0; align-items: flex-end; gap: 6px; }
+.selector-row { display: flex; min-width: 0; align-items: flex-start; gap: 6px; }
 .selector-field { display: grid; flex: 1; min-width: 0; gap: 6px; }
-.selector-field span { color: var(--muted); font: 9px var(--mono); letter-spacing: .08em; }
+.selector-field span { color: var(--muted); font: 9px/12px var(--mono); letter-spacing: .08em; }
 .selector-field select { width: 100%; min-width: 0; height: 38px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: white; font-size: 12px; }
 .selector-field select:disabled { color: #9aa1aa; background: #f4f6f9; }
 .selector-uid { display: block; overflow-wrap: anywhere; color: var(--muted); font: 8px/1.25 var(--mono); }
-.selector-add { width: 38px; min-height: 38px; flex: 0 0 38px; padding: 0; font-size: 20px; line-height: 1; }
+.selector-add { width: 38px; min-height: 38px; flex: 0 0 38px; margin-top: 18px; padding: 0; font-size: 20px; line-height: 1; }
 .selector-add:disabled { cursor: not-allowed; opacity: .45; transform: none; }
 .qr-modal-backdrop { z-index: 20; }
 .qr-modal { max-height: calc(100vh - 40px); overflow-y: auto; }

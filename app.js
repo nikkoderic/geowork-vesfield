@@ -360,12 +360,11 @@
         </div>
       </section>
       <section class="data-card station-browser-card">
-        <div class="section-head"><h2>Station details</h2><button class="button button-outline button-small" data-action="edit-station">Station settings</button></div>
+        <div class="section-head"><h2>Station details</h2><button class="button button-outline button-small" data-action="edit-station">Station setup</button></div>
         <div class="coordinate-row"><span>Station coordinates</span><span>${coordinates}</span></div>
         <div class="coordinate-row"><span>GPS accuracy</span><span>${station.midpoint?.accuracy == null ? "—" : `${station.midpoint.accuracy.toFixed(1)} m`}</span></div>
         <div class="coordinate-row"><span>Target A / B</span><span>${normalizeAzimuth(station.targets.A).toFixed(1)}° / ${normalizeAzimuth(station.targets.B).toFixed(1)}°</span></div>
         <div id="gps-operation-status" class="gps-operation-status" role="status" aria-live="polite" hidden></div>
-        <button class="button button-outline button-small station-coordinate-action" data-action="set-station-coordinates">${station.midpoint ? "Update station coordinates" : "Set station coordinates from GPS"}</button>
       </section>
       <section class="data-card station-browser-points">
         <div class="section-head"><h2>Acquired points <span class="project-meta">(${station.points.length})</span></h2></div>
@@ -383,18 +382,19 @@
   }
 
   function encodeStationQrPayload(project, site, station) {
+    if (!station.midpoint) throw new Error("Set station coordinates before sharing its QR code.");
     const payload = {
       kind: "ves-field-station",
-      version: 1,
+      version: 2,
       project: { id: project.id, name: project.name },
       site: { id: site.id, name: site.name },
-      station: { id: station.id, name: station.name, targets: station.targets },
+      station: { id: station.id, name: station.name, targets: station.targets, midpoint: station.midpoint },
       sourceTarget: activeTarget
     };
     const bytes = new TextEncoder().encode(JSON.stringify(payload));
     let binary = "";
     for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
-    return `VESFIELD:1:${btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+    return `VESFIELD:2:${btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
   }
 
   function showStationQr() {
@@ -402,6 +402,10 @@
     const site = selectedSite();
     const station = selectedStation();
     if (!project || !site || !station) throw new Error("Select a station before sharing its QR code.");
+    if (!station.midpoint) {
+      showToast("Set station coordinates before sharing its QR code.");
+      return;
+    }
     if (typeof qrcode !== "function") throw new Error("QR code generation is unavailable.");
 
     const qr = qrcode(0, "M");
@@ -411,19 +415,23 @@
     backdrop.className = "modal-backdrop qr-modal-backdrop";
     backdrop.innerHTML = `<section class="modal qr-modal" role="dialog" aria-modal="true" aria-labelledby="qr-modal-title">
       <h2 id="qr-modal-title">Share station setup</h2>
-      <p>Scan this code on the other device to match the project, site, and station. The other device will select target ${activeTarget === "A" ? "B" : "A"}.</p>
+      <p>Scan this code on the other device to match the project, site, and station coordinates. The other device will select target ${activeTarget === "A" ? "B" : "A"}.</p>
       <div class="qr-code">${qr.createSvgTag(6, 4, "VES Field project and station sharing code", "VES Field station QR code")}</div>
-      <div class="qr-identifiers"><span>PROJECT · ${escapeHtml(project.id)}</span><span>SITE · ${escapeHtml(site.id)}</span><span>STATION · ${escapeHtml(station.id)}</span></div>
+      <div class="qr-identifiers"><span>PROJECT · ${escapeHtml(project.id)}</span><span>SITE · ${escapeHtml(site.id)}</span><span>STATION · ${escapeHtml(station.id)}</span>
+        <span>COORDINATES · ${formatCoord(station.midpoint.lat)}, ${formatCoord(station.midpoint.lon)} · ±${station.midpoint.accuracy.toFixed(1)} m</span></div>
       <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-qr">Close</button></div>
     </section>`;
     document.body.append(backdrop);
     backdrop.addEventListener("click", (event) => {
-      if (event.target === backdrop || event.target.closest('[data-action="close-qr"]')) backdrop.remove();
+      if (event.target.closest('[data-action="close-qr"]')) backdrop.remove();
     });
   }
 
   function decodeStationQrPayload(text) {
-    const match = /^VESFIELD:1:([A-Za-z0-9_-]+)$/.exec(text.trim());
+    if (/^VESFIELD:1:/.test(text.trim())) {
+      throw new Error("This QR code is from an older app version and does not include station coordinates. Update the sending device and create a new code.");
+    }
+    const match = /^VESFIELD:2:([A-Za-z0-9_-]+)$/.exec(text.trim());
     if (!match) throw new Error("This QR code is not a VES Field station code.");
     const base64 = match[1].replace(/-/g, "+").replace(/_/g, "/");
     const binary = atob(base64 + "=".repeat((4 - base64.length % 4) % 4));
@@ -432,13 +440,17 @@
     const validId = (value) => typeof value === "string" && value.length > 0 && value.length <= 128 && !/[\u0000-\u001f]/.test(value);
     const validName = (value) => typeof value === "string" && value.trim().length > 0 && value.length <= 120;
     const validTarget = (value) => Number.isFinite(value) && value >= 0 && value < 360;
-    if (payload.kind !== "ves-field-station" || payload.version !== 1 ||
+    const validMidpoint = (value) => value && Number.isFinite(value.lat) && value.lat >= -90 && value.lat <= 90 &&
+      Number.isFinite(value.lon) && value.lon >= -180 && value.lon <= 180 &&
+      Number.isFinite(value.accuracy) && value.accuracy >= 0 && typeof value.capturedAt === "string" && !Number.isNaN(Date.parse(value.capturedAt));
+    if (payload.kind !== "ves-field-station" || payload.version !== 2 ||
       !validId(payload.project?.id) || !validName(payload.project?.name) ||
       !validId(payload.site?.id) || !validName(payload.site?.name) ||
       !validId(payload.station?.id) || !validName(payload.station?.name) ||
       !validTarget(payload.station?.targets?.A) || !validTarget(payload.station?.targets?.B) ||
+      !validMidpoint(payload.station?.midpoint) ||
       !["A", "B"].includes(payload.sourceTarget)) {
-      throw new Error("The VES Field station code is incomplete or invalid.");
+      throw new Error("The VES Field station code is incomplete, invalid, or does not include station coordinates.");
     }
     return payload;
   }
@@ -446,6 +458,26 @@
   async function applyStationQrPayload(text) {
     const payload = decodeStationQrPayload(text);
     const timestamp = now();
+    const existingProject = projects.find((item) => item.id === payload.project.id);
+    const existingSite = existingProject?.sites.find((item) => item.id === payload.site.id);
+    const existingStation = existingSite?.stations.find((item) => item.id === payload.station.id);
+    const incomingMidpoint = payload.station.midpoint;
+    const coordinatesDiffer = existingStation?.midpoint &&
+      (existingStation.midpoint.lat !== incomingMidpoint.lat ||
+        existingStation.midpoint.lon !== incomingMidpoint.lon ||
+        existingStation.midpoint.accuracy !== incomingMidpoint.accuracy);
+    if (coordinatesDiffer) {
+      const confirmed = await openModal({
+        title: "Replace station coordinates from QR?",
+        description: `The saved location ${formatCoord(existingStation.midpoint.lat)}, ${formatCoord(existingStation.midpoint.lon)} will be replaced with ${formatCoord(incomingMidpoint.lat)}, ${formatCoord(incomingMidpoint.lon)}.`,
+        fields: [],
+        submitLabel: "Replace coordinates"
+      });
+      if (!confirmed) {
+        showToast("Station link canceled. Existing coordinates were kept.");
+        return;
+      }
+    }
     let project = projects.find((item) => item.id === payload.project.id);
     if (!project) {
       project = { id: payload.project.id, name: payload.project.name, createdAt: timestamp, updatedAt: timestamp, sites: [] };
@@ -464,10 +496,12 @@
         createdAt: timestamp,
         updatedAt: timestamp,
         targets: { A: payload.station.targets.A, B: payload.station.targets.B },
-        midpoint: null,
+        midpoint: payload.station.midpoint,
         points: []
       };
       site.stations.push(station);
+    } else if (!station.midpoint || coordinatesDiffer) {
+      station.midpoint = incomingMidpoint;
     }
     project.updatedAt = timestamp;
     site.updatedAt = timestamp;
@@ -489,9 +523,9 @@
     backdrop.className = "modal-backdrop qr-modal-backdrop";
     backdrop.innerHTML = `<section class="modal qr-modal" role="dialog" aria-modal="true" aria-labelledby="qr-scan-title">
       <h2 id="qr-scan-title">Scan station QR</h2>
-      <p>Point the camera at another VES Field station QR code.</p>
+      <p>Point the camera at another VES Field station QR code. Keep it centered and avoid glare; tap the preview to refocus if supported.</p>
       <video class="qr-scan-video" autoplay muted playsinline aria-label="Camera preview for QR scanning"></video>
-      <div class="gps-operation-status qr-scan-status" role="status">Starting camera…</div>
+      <div class="gps-operation-status qr-scan-status" role="status">Starting camera and autofocus…</div>
       <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-qr">Cancel</button></div>
     </section>`;
     document.body.append(backdrop);
@@ -516,17 +550,51 @@
     };
     document.addEventListener("keydown", onKeyDown);
     backdrop.addEventListener("click", (event) => {
-      if (event.target === backdrop || event.target.closest('[data-action="close-qr"]')) stop();
+      if (event.target.closest('[data-action="close-qr"]')) stop();
     });
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" } } });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      } });
       if (closed) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
       video.srcObject = stream;
       await video.play();
-      backdrop.querySelector(".qr-scan-status").textContent = "Scanning for a VES Field code…";
+      const status = backdrop.querySelector(".qr-scan-status");
+      const track = stream.getVideoTracks()[0];
+      const focusModes = track.getCapabilities?.().focusMode || [];
+      const supportsContinuousFocus = focusModes.includes("continuous");
+      const supportsSingleShotFocus = focusModes.includes("single-shot");
+      if (supportsContinuousFocus) {
+        try {
+          await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+        } catch {
+          status.textContent = supportsSingleShotFocus
+            ? "Continuous autofocus is unavailable. Tap the preview to focus."
+            : "Autofocus is unavailable. Hold steady and move closer until the code is sharp.";
+        }
+      } else {
+        status.textContent = supportsSingleShotFocus
+          ? "Autofocus is off. Tap the preview to focus."
+          : "Autofocus is unavailable. Hold steady and move closer until the code is sharp.";
+      }
+      if (supportsSingleShotFocus) {
+        video.addEventListener("pointerup", async (event) => {
+          if (closed) return;
+          event.preventDefault();
+          try {
+            await track.applyConstraints({ advanced: [{ focusMode: "single-shot" }] });
+            status.textContent = "Focused. Scanning for a VES Field code…";
+          } catch {
+            status.textContent = "Could not refocus. Move closer or improve the lighting.";
+          }
+        });
+      }
+      if (supportsContinuousFocus) status.textContent = "Scanning for a VES Field code… Autofocus is active.";
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d", { willReadFrequently: true });
       if (!context) throw new Error("Could not start QR scanning.");
@@ -534,7 +602,7 @@
         if (closed) return;
         if (timestamp - lastScanAt >= 120 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) {
           lastScanAt = timestamp;
-          const scale = Math.min(1, 720 / video.videoWidth);
+          const scale = Math.min(1, 960 / video.videoWidth);
           canvas.width = Math.round(video.videoWidth * scale);
           canvas.height = Math.round(video.videoHeight * scale);
           context.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -894,7 +962,7 @@
     return new Promise((resolve) => {
       const close = (value) => { backdrop.remove(); resolve(value); };
       backdrop.addEventListener("click", (event) => {
-        if (event.target === backdrop || event.target.closest('[data-action="close-modal"]')) close(null);
+        if (event.target.closest('[data-action="close-modal"]')) close(null);
       });
       form.addEventListener("input", (event) => {
         if (event.target instanceof HTMLInputElement) event.target.setCustomValidity("");
@@ -1046,16 +1114,43 @@
 
   async function editStation() {
     const station = selectedStation();
+    const project = selectedProject();
     const values = await openModal({ title: "Station settings", fields: [
       { name: "targetA", label: "TARGET AZIMUTH A (DEGREES)", type: "number", value: String(station.targets.A), min: "0", max: "360", step: "0.1", required: true },
-      { name: "targetB", label: "TARGET AZIMUTH B (DEGREES)", type: "number", value: String(station.targets.B), min: "0", max: "360", step: "0.1", required: true }
+      { name: "targetB", label: "TARGET AZIMUTH B (DEGREES)", type: "number", value: String(station.targets.B), min: "0", max: "360", step: "0.1", required: true },
+      { name: "updateCoordinates", label: station.midpoint ? "Replace station coordinates with current GPS position" : "Set station coordinates from current GPS position", type: "checkbox" }
     ] });
     if (!values) return;
-    station.targets = { A: normalizeAzimuth(values.targetA), B: normalizeAzimuth(values.targetB) };
+    const targets = { A: normalizeAzimuth(values.targetA), B: normalizeAzimuth(values.targetB) };
+    const updateCoordinates = values.updateCoordinates === "on";
+    const targetChanged = targets.A !== normalizeAzimuth(station.targets.A) || targets.B !== normalizeAzimuth(station.targets.B);
+    if (!targetChanged && !updateCoordinates) {
+      showToast("No station settings changed.");
+      return;
+    }
+    const changes = [];
+    if (targetChanged) changes.push(`Set target azimuths to A ${targets.A.toFixed(1)}° and B ${targets.B.toFixed(1)}°.`);
+    if (updateCoordinates) changes.push("Capture and replace the station coordinates using the current GPS position.");
+    const confirmed = await openModal({
+      title: "Confirm station setup changes?",
+      description: changes.join(" "),
+      fields: [],
+      submitLabel: "Confirm changes"
+    });
+    if (!confirmed) return;
+    const position = updateCoordinates ? await getFreshPosition() : null;
+    if (updateCoordinates && !position) return;
+    if (selectedStation()?.id !== station.id) {
+      showToast("Could not save station settings because the selected station changed.", true);
+      return;
+    }
+    station.targets = targets;
+    if (position) station.midpoint = { ...position };
     station.updatedAt = now();
-    selectedProject().updatedAt = now();
+    project.updatedAt = now();
     await persist();
     render();
+    showToast("Station setup saved.");
   }
 
   function getFreshPosition() {
@@ -1105,6 +1200,19 @@
   }
 
   async function setStationCoordinates(station = selectedStation(), project = selectedProject()) {
+    if (!station || !project || !project.sites.some((site) => site.stations.includes(station))) {
+      showToast("Could not save station coordinates because the station is no longer available.", true);
+      return;
+    }
+    const confirmed = await openModal({
+      title: station.midpoint ? "Replace station coordinates?" : "Set station coordinates?",
+      description: station.midpoint
+        ? "The saved station coordinates will be replaced with a new GPS fix. This can change all station-relative distance and azimuth readings."
+        : "The current GPS position will become this station's reference location. You need station coordinates to calculate distances and capture points.",
+      fields: [],
+      submitLabel: station.midpoint ? "Replace coordinates" : "Set coordinates"
+    });
+    if (!confirmed) return;
     const position = await getFreshPosition();
     if (!position) return;
     if (!station || !project || !project.sites.some((site) => site.stations.includes(station))) {
