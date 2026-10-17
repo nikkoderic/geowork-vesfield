@@ -41,6 +41,7 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .update-button:disabled { cursor: wait; opacity: .7; }
 .connection-status { display: inline-flex; gap: 8px; align-items: center; color: #d1ddd3; font-size: 12px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 0 3px #00bfe820; }
+.connection-status.is-offline .status-dot { background: #e53935; box-shadow: 0 0 0 3px #e5393520; }
 .main-content { width: min(1160px, calc(100% - 48px)); margin: 0 auto; flex: 1; padding: 38px 0 52px; }
 .app-footer { padding: 12px 18px max(14px, env(safe-area-inset-bottom)); color: var(--muted); text-align: center; font: 9px var(--mono); letter-spacing: .04em; }
 .eyebrow { color: var(--green-2); font: 500 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; }
@@ -273,7 +274,7 @@ button:focus-visible, input:focus-visible, a:focus-visible {
   .toolbar-row { margin-top: 4px; }
 }
 @media (max-width: 430px) {
-  .connection-status { font-size: 0; }
+  .connection-status { gap: 6px; font-size: 10px; }
   .update-button, .install-button { min-height: 34px; padding: 0 8px; font-size: 9px; }
   .readout-grid { grid-template-columns: 1fr 1fr; }
   .readout-cell { min-height: 68px; padding: 9px; }

@@ -8,7 +8,8 @@
   const fileInput = document.getElementById("import-file");
   const installButton = document.getElementById("install-button");
   const updateButton = document.getElementById("update-button");
-  let serviceWorkerRegistration = null;
+  let serviceWorkerControlsPage = Boolean(navigator.serviceWorker?.controller);
+  let updateAvailable = false;
   let db;
   let projects = [];
   let activeProjectId = null;
@@ -704,12 +705,12 @@
         </div>
         ${station ? `<aside class="side-panel">
             ${renderDirectionMap(station)}
+            <section class="data-card"><h3>Acquired points <span class="project-meta">(${station.points.length})</span></h3><div class="point-list">${pointMarkup}</div></section>
             <section class="data-card"><h3>Station coordinates</h3>
               <div class="coordinate-row"><span>Coordinates</span><span>${stationCoordinatesText}</span></div>
               <div class="coordinate-row"><span>GPS accuracy</span><span>${stationCoordinates?.accuracy == null ? "—" : `${stationCoordinates.accuracy.toFixed(1)} m`}</span></div>
               ${stationCoordinates ? `<button class="button button-outline button-small station-setup-button" data-action="edit-station">Station setup</button>` : ""}
             </section>
-            <section class="data-card"><h3>Acquired points <span class="project-meta">(${station.points.length})</span></h3><div class="point-list">${pointMarkup}</div></section>
           </aside>` : ""}
       </section>`;
     updateLiveReadout();
@@ -996,7 +997,11 @@
   }
 
   async function createProject() {
-    const values = await openModal({ title: "New project", description: "Give this survey project a name.", fields: [{ name: "name", label: "PROJECT NAME", value: "VES Survey 1", required: true, autofocus: true }] });
+    const nextProjectNumber = projects.reduce((max, project) => {
+      const match = project.name.match(/^VES (?:Project|Survey)\s+(\d+)$/i);
+      return match ? Math.max(max, Number(match[1])) : max;
+    }, 0) + 1;
+    const values = await openModal({ title: "New project", description: "Give this survey project a name.", fields: [{ name: "name", label: "PROJECT NAME", value: `VES Project ${nextProjectNumber}`, required: true, autofocus: true }] });
     if (!values) return;
     const project = { id: newId(), name: values.name.trim(), createdAt: now(), updatedAt: now(), sites: [] };
     projects.push(project);
@@ -1403,7 +1408,7 @@
       station.points.forEach((point) => rows.push([...base, "survey_point", point.id, point.target, point.lat, point.lon, point.accuracy, point.distanceMeters, point.bearingDegrees, point.targetAzimuth, station.targets.A, station.targets.B, point.capturedAt]));
     }));
     const content = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
-    downloadFile(`${safeFilename(project.name)}-ves-survey.csv`, `\uFEFF${content}`, "text/csv;charset=utf-8");
+    downloadFile(`${safeFilename(project.name)}.csv`, `\uFEFF${content}`, "text/csv;charset=utf-8");
     showToast("Project CSV exported.");
   }
 
@@ -1417,7 +1422,7 @@
 
   async function shareProject() {
     const project = selectedProject();
-    const fileName = `${safeFilename(project.name)}.vesproject.json`;
+    const fileName = `${safeFilename(project.name)}.vesfield.json`;
     const content = exportProjectJson(project);
     const downloadBackup = () => downloadFile(fileName, content, "application/json");
     if (navigator.share && typeof File !== "undefined") {
@@ -1635,16 +1640,25 @@
       document.getElementById("app-version").textContent = `App version ${event.data.version}`;
     }
   });
-  navigator.serviceWorker?.addEventListener("controllerchange", async () => {
-    const registration = await navigator.serviceWorker.getRegistration();
-    (navigator.serviceWorker.controller || registration?.active)?.postMessage({ type: "GET_APP_VERSION" });
+  navigator.serviceWorker?.addEventListener("controllerchange", () => {
+    const controller = navigator.serviceWorker.controller;
+    if (!controller) return;
+    if (serviceWorkerControlsPage) {
+      updateAvailable = true;
+      updateButton.hidden = false;
+    } else {
+      serviceWorkerControlsPage = true;
+    }
+    controller.postMessage({ type: "GET_APP_VERSION" });
   });
   window.addEventListener("resize", () => {
     if (selectedStation()) updateFieldMap();
   });
 
   function updateConnectionStatus() {
-    document.getElementById("connection-status").innerHTML = `<span class="status-dot"></span> ${navigator.onLine ? "Online" : "Offline ready"}`;
+    const status = document.getElementById("connection-status");
+    status.classList.toggle("is-offline", !navigator.onLine);
+    status.innerHTML = `<span class="status-dot"></span> ${navigator.onLine ? "Online" : "Offline ready"}`;
   }
 
   window.addEventListener("beforeinstallprompt", (event) => {
@@ -1660,74 +1674,16 @@
     installButton.hidden = true;
   });
 
-  function waitForWorkerActivation(worker) {
-    if (worker.state === "activated") return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      const timeoutId = window.setTimeout(() => {
-        worker.removeEventListener("statechange", onStateChange);
-        reject(new Error("The update took too long to activate. Please try again."));
-      }, 15000);
-      function onStateChange() {
-        if (worker.state === "activated") {
-          window.clearTimeout(timeoutId);
-          worker.removeEventListener("statechange", onStateChange);
-          resolve();
-        } else if (worker.state === "redundant") {
-          window.clearTimeout(timeoutId);
-          worker.removeEventListener("statechange", onStateChange);
-          reject(new Error("The browser could not install the update."));
-        }
-      }
-      worker.addEventListener("statechange", onStateChange);
-      onStateChange();
-    });
-  }
-
-  async function updateApp() {
-    if (!serviceWorkerRegistration) throw new Error("App updates are not available in this browser.");
-    if (!navigator.onLine) throw new Error("Connect to the internet to check for app updates.");
-
-    const previousWorker = serviceWorkerRegistration.active;
-    const controllerBeforeUpdate = navigator.serviceWorker.controller;
+  function updateApp() {
+    if (!updateAvailable) return;
     updateButton.disabled = true;
-    updateButton.textContent = "Checking…";
-    try {
-      await serviceWorkerRegistration.update();
-      const installingWorker = serviceWorkerRegistration.installing;
-      const waitingWorker = serviceWorkerRegistration.waiting;
-      if (waitingWorker) waitingWorker.postMessage({ type: "SKIP_WAITING" });
-      const worker = installingWorker || waitingWorker;
-      if (worker) await waitForWorkerActivation(worker);
-
-      if (serviceWorkerRegistration.active === previousWorker) {
-        showToast("VES Field is already up to date.");
-        return;
-      }
-
-      showToast("Update installed. Reloading VES Field…");
-      if (controllerBeforeUpdate && navigator.serviceWorker.controller === controllerBeforeUpdate) {
-        const controllerChanged = new Promise((resolve) => {
-          navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true });
-        });
-        if (navigator.serviceWorker.controller !== controllerBeforeUpdate) {
-          window.location.reload();
-          return;
-        }
-        await Promise.race([
-          controllerChanged,
-          new Promise((resolve) => window.setTimeout(resolve, 5000))
-        ]);
-      }
-      window.location.reload();
-    } finally {
-      updateButton.disabled = false;
-      updateButton.textContent = "↻ Update app";
-    }
+    updateButton.textContent = "Reloading…";
+    window.location.reload();
   }
 
-  updateButton.addEventListener("click", async () => {
+  updateButton.addEventListener("click", () => {
     try {
-      await updateApp();
+      updateApp();
     } catch (error) {
       showToast(`App update failed: ${error.message}`, true);
     }
@@ -1742,8 +1698,10 @@
       render();
       if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
         navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then((registration) => {
-          serviceWorkerRegistration = registration;
-          updateButton.hidden = false;
+          if (registration.waiting && navigator.serviceWorker.controller) {
+            updateAvailable = true;
+            updateButton.hidden = false;
+          }
           navigator.serviceWorker.ready.then((readyRegistration) => {
             (navigator.serviceWorker.controller || readyRegistration.active)?.postMessage({ type: "GET_APP_VERSION" });
           });
