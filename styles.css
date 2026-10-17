@@ -154,6 +154,7 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .readout-label { display: block; margin-bottom: 6px; color: #aabdaf; font: 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
 .readout-value { display: block; color: white; font: 17px var(--mono); letter-spacing: -.03em; }
 .readout-value.large { color: var(--cyan); font-size: 25px; }
+.readout-comparison { display: block; margin-top: 5px; color: #aabdaf; font: 9px/1.35 var(--mono); }
 .readout-hint { min-height: 24px; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #aabdaf; font-size: 10px; }
 .target-selectors { display: flex; gap: 8px; }
 .target-chip { min-width: 80px; border: 1px solid #ffffff30; border-radius: 7px; color: #d6e1d8; background: transparent; padding: 8px 12px; cursor: pointer; font: 11px var(--mono); }
@@ -237,6 +238,7 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .station-coordinate-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 9px; align-items: end; }
 .station-coordinate-inputs .field { min-width: 0; margin: 0; }
 .station-setup-modal .field > span { color: var(--muted); font: 9px/1.4 var(--mono); }
+.azimuth-separation { display: block; margin-top: 7px; color: var(--muted); font: 9px/1.4 var(--mono); }
 .gps-coordinate-button { min-height: 42px; padding: 0 10px; font-size: 10px; white-space: nowrap; }
 .station-setup-gps-status { min-height: 15px; margin-top: 7px; color: var(--muted); font-size: 10px; }
 .station-azimuth-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 15px; }

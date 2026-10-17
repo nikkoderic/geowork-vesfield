@@ -222,6 +222,21 @@
     return Number.isFinite(number) ? ((number % 360) + 360) % 360 : 0;
   }
 
+  function smallestAzimuthDifference(first, second) {
+    const difference = Math.abs(normalizeAzimuth(first) - normalizeAzimuth(second));
+    return Math.min(difference, 360 - difference);
+  }
+
+  function updateAzimuthSeparation(output, form) {
+    const inputA = form.elements.namedItem("targetA");
+    const inputB = form.elements.namedItem("targetB");
+    const values = [inputA, inputB].map((input) => Number(input.value));
+    const valid = [inputA, inputB].every((input) => input.value.trim() !== "" && input.validity.valid);
+    output.textContent = valid
+      ? `Smallest angle between A and B · ${smallestAzimuthDifference(values[0], values[1]).toFixed(1)}°`
+      : "Smallest angle between A and B · —";
+  }
+
   function distanceAndBearing(from, to) {
     if (!from || !to) return null;
     const radians = (degrees) => degrees * Math.PI / 180;
@@ -691,7 +706,7 @@
           <div class="readout-grid ${station ? "" : "position-only"}">
             <div class="readout-cell"><span class="readout-label">Current position</span><span class="readout-value" id="current-position">—</span></div>
             ${station ? `<div class="readout-cell"><span class="readout-label">Distance from station</span><span class="readout-value large" id="current-distance">—</span></div>
-              <div class="readout-cell"><span class="readout-label">Current azimuth</span><span class="readout-value" id="current-azimuth">—</span></div>
+              <div class="readout-cell"><span class="readout-label">Current azimuth</span><span class="readout-value" id="current-azimuth">—</span><span class="readout-comparison" id="current-target-angle">Smallest angle to target ${activeTarget} · —</span></div>
               <div class="readout-cell"><span class="readout-label">Target azimuth · <span id="target-label">${activeTarget}</span></span><span class="readout-value large" id="target-azimuth">${normalizeAzimuth(targetValue).toFixed(1)}°</span></div>` : `<div class="readout-cell"><span class="readout-label">GPS accuracy</span><span class="readout-value" id="gps-accuracy">—</span></div>`}
           </div>
           <div class="readout-hint"><span id="gps-hint">Keep this screen open for continuous GPS updates.</span><button id="gps-retry" class="button button-quiet button-small" data-action="retry-location" hidden>Retry GPS</button></div>
@@ -919,6 +934,8 @@
       const azimuth = document.getElementById("current-azimuth");
       if (distance) distance.textContent = "—";
       if (azimuth) azimuth.textContent = "—";
+      const targetAngle = document.getElementById("current-target-angle");
+      if (targetAngle) targetAngle.textContent = `Smallest angle to target ${activeTarget} · —`;
       updateFieldMap();
       return;
     }
@@ -933,6 +950,7 @@
       if (station) {
         document.getElementById("current-distance").textContent = station.midpoint ? "Waiting for GPS" : "—";
         document.getElementById("current-azimuth").textContent = "—";
+        document.getElementById("current-target-angle").textContent = `Smallest angle to target ${activeTarget} · —`;
       }
       updateFieldMap();
       return;
@@ -954,6 +972,12 @@
     const azimuth = document.getElementById("current-azimuth");
     if (distance) distance.textContent = measure ? `${measure.distance.toFixed(1)} m` : "—";
     if (azimuth) azimuth.textContent = measure ? `${measure.bearing.toFixed(1)}°` : "—";
+    const targetAngle = document.getElementById("current-target-angle");
+    if (targetAngle) {
+      targetAngle.textContent = measure
+        ? `Smallest angle to target ${activeTarget} · ${smallestAzimuthDifference(measure.bearing, station.targets[activeTarget]).toFixed(1)}°`
+        : `Smallest angle to target ${activeTarget} · —`;
+    }
     updateFieldMap();
   }
 
@@ -965,11 +989,19 @@
       ${fields.map((field) => field.type === "checkbox"
         ? `<div class="field field-checkbox"><label><input name="${escapeHtml(field.name)}" type="checkbox" ${field.checked ? "checked" : ""}> <span>${escapeHtml(field.label)}</span></label></div>`
         : `<div class="field"><label for="field-${escapeHtml(field.name)}">${escapeHtml(field.label)}</label>
-          <input id="field-${escapeHtml(field.name)}" name="${escapeHtml(field.name)}" type="${field.type || "text"}" value="${escapeHtml(field.value ?? "")}" ${field.required ? "required" : ""} ${field.min !== undefined ? `min="${field.min}"` : ""} ${field.max !== undefined ? `max="${field.max}"` : ""} ${field.step ? `step="${field.step}"` : ""} ${field.autofocus ? "autofocus" : ""}></div>`).join("")}
+          <input id="field-${escapeHtml(field.name)}" name="${escapeHtml(field.name)}" type="${field.type || "text"}" value="${escapeHtml(field.value ?? "")}" ${field.required ? "required" : ""} ${field.min !== undefined ? `min="${field.min}"` : ""} ${field.max !== undefined ? `max="${field.max}"` : ""} ${field.step ? `step="${field.step}"` : ""} ${field.autofocus ? "autofocus" : ""}>
+          ${field.name === "targetB" ? `<small class="azimuth-separation"></small>` : ""}</div>`).join("")}
       <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-modal">Cancel</button><button class="button ${danger ? "button-danger" : "button-primary"}" type="submit">${escapeHtml(submitLabel)}</button></div>
     </form>`;
     document.body.append(backdrop);
     const form = backdrop.querySelector("form");
+    const azimuthSeparation = form.querySelector(".azimuth-separation");
+    if (azimuthSeparation) {
+      const updateSeparation = () => updateAzimuthSeparation(azimuthSeparation, form);
+      form.elements.namedItem("targetA").addEventListener("input", updateSeparation);
+      form.elements.namedItem("targetB").addEventListener("input", updateSeparation);
+      updateSeparation();
+    }
     (form.querySelector("[autofocus]") || form.querySelector('[type="submit"]'))?.focus();
     return new Promise((resolve) => {
       const close = (value) => { backdrop.remove(); resolve(value); };
@@ -1153,6 +1185,7 @@
         <label class="field"><span>TARGET AZIMUTH A (0–&lt;360°)</span><input name="targetA" type="number" min="0" max="359.999999" step="any" value="${escapeHtml(String(normalizeAzimuth(station.targets.A)))}" required inputmode="decimal"></label>
         <label class="field"><span>TARGET AZIMUTH B (0–&lt;360°)</span><input name="targetB" type="number" min="0" max="359.999999" step="any" value="${escapeHtml(String(normalizeAzimuth(station.targets.B)))}" required inputmode="decimal"></label>
       </div>
+      <div class="azimuth-separation"></div>
       <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">Review changes</button></div>
     </form>`;
     document.body.append(backdrop);
@@ -1161,6 +1194,11 @@
     const longitude = form.elements.namedItem("longitude");
     const gpsButton = form.querySelector('[data-action="fill-gps-coordinates"]');
     const gpsStatus = form.querySelector(".station-setup-gps-status");
+    const azimuthSeparation = form.querySelector(".azimuth-separation");
+    const updateSeparation = () => updateAzimuthSeparation(azimuthSeparation, form);
+    form.elements.namedItem("targetA").addEventListener("input", updateSeparation);
+    form.elements.namedItem("targetB").addEventListener("input", updateSeparation);
+    updateSeparation();
     let gpsPosition = null;
     gpsButton.focus();
 
