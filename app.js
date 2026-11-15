@@ -118,6 +118,35 @@
     });
   }
 
+  function removeStoredPointMeasurements(project) {
+    let changed = false;
+    project.sites.forEach((site) => site.stations.forEach((station) => station.points.forEach((point) => {
+      if ("distanceMeters" in point || "bearingDegrees" in point) {
+        delete point.distanceMeters;
+        delete point.bearingDegrees;
+        changed = true;
+      }
+    })));
+    return changed;
+  }
+
+  function migratePointMeasurements() {
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction("projects", "readwrite");
+      const request = transaction.objectStore("projects").openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        const project = cursor.value;
+        if (removeStoredPointMeasurements(project)) cursor.update(project);
+        cursor.continue();
+      };
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error || new Error("Could not update saved point measurements."));
+      transaction.onabort = () => reject(transaction.error || new Error("Updating saved point measurements was interrupted."));
+    });
+  }
+
   async function persist() {
     try {
       await storeProjects();
@@ -473,10 +502,13 @@
 
   function renderPointItems(station) {
     const points = [...station.points].sort((a, b) => b.capturedAt.localeCompare(a.capturedAt));
-    return points.length ? points.map((point) => `<div class="point-item">
-      <div class="point-item-top"><strong class="point-target-${point.target.toLowerCase()}">POINT ${escapeHtml(point.target)}</strong><span>${new Date(point.capturedAt).toLocaleString()}</span><button class="point-delete" data-action="delete-point" data-id="${escapeHtml(point.id)}" aria-label="Delete point ${escapeHtml(point.target)} recorded ${new Date(point.capturedAt).toLocaleString()}" title="Delete point">×</button></div>
-      <div class="point-item-detail">${formatCoord(point.lat)}, ${formatCoord(point.lon)} · ${point.distanceMeters == null ? "—" : `${point.distanceMeters.toFixed(1)} m`} · ${point.bearingDegrees == null ? "—" : `${point.bearingDegrees.toFixed(1)}°`}</div>
-    </div>`).join("") : `<div class="inline-empty">No points acquired at this station yet.</div>`;
+    return points.length ? points.map((point) => {
+      const measure = distanceAndBearing(station.midpoint, point);
+      return `<div class="point-item">
+        <div class="point-item-top"><strong class="point-target-${point.target.toLowerCase()}">POINT ${escapeHtml(point.target)}</strong><span>${new Date(point.capturedAt).toLocaleString()}</span><button class="point-delete" data-action="delete-point" data-id="${escapeHtml(point.id)}" aria-label="Delete point ${escapeHtml(point.target)} recorded ${new Date(point.capturedAt).toLocaleString()}" title="Delete point">×</button></div>
+        <div class="point-item-detail">${formatCoord(point.lat)}, ${formatCoord(point.lon)} · ${measure ? `${measure.distance.toFixed(1)} m` : "—"} · ${measure ? `${measure.bearing.toFixed(1)}°` : "—"}</div>
+      </div>`;
+    }).join("") : `<div class="inline-empty">No points acquired at this station yet.</div>`;
   }
 
   function encodeStationQrPayload(project, site, station) {
@@ -1589,11 +1621,9 @@
       showToast("Station or target changed. Record the point again.", true);
       return;
     }
-    const measure = station.midpoint ? distanceAndBearing(station.midpoint, position) : null;
     station.points.push({
       id: newId(), target, lat: position.lat, lon: position.lon, accuracy: position.accuracy,
-      capturedAt: now(), distanceMeters: measure?.distance ?? null, bearingDegrees: measure?.bearing ?? null,
-      targetAzimuth: normalizeAzimuth(station.targets[target])
+      capturedAt: now(), targetAzimuth: normalizeAzimuth(station.targets[target])
     });
     station.updatedAt = now();
     project.updatedAt = now();
@@ -1635,7 +1665,10 @@
       const base = [project.id, project.name, site.id, site.name, station.id, station.name];
       rows.push([...base, "station", ...Array(8).fill(""), station.targets.A, station.targets.B, ""]);
       if (station.midpoint) rows.push([...base, "station_coordinates", "", "", station.midpoint.lat, station.midpoint.lon, station.midpoint.accuracy, "", "", "", station.targets.A, station.targets.B, station.midpoint.capturedAt]);
-      station.points.forEach((point) => rows.push([...base, "survey_point", point.id, point.target, point.lat, point.lon, point.accuracy, point.distanceMeters, point.bearingDegrees, point.targetAzimuth, station.targets.A, station.targets.B, point.capturedAt]));
+      station.points.forEach((point) => {
+        const measure = distanceAndBearing(station.midpoint, point);
+        rows.push([...base, "survey_point", point.id, point.target, point.lat, point.lon, point.accuracy, measure?.distance, measure?.bearing, point.targetAzimuth, station.targets.A, station.targets.B, point.capturedAt]);
+      });
     }));
     const content = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
     downloadFile(`${safeFilename(project.name)}.csv`, `\uFEFF${content}`, "text/csv;charset=utf-8");
@@ -1735,6 +1768,7 @@
       if (payload.format !== EXPORT_FORMAT || payload.version !== 1 || !payload.project || !isValidProject(payload.project)) {
         throw new Error("This file is not a valid VES Field project export.");
       }
+      removeStoredPointMeasurements(payload.project);
       const result = mergeProject(payload.project);
       activeProjectId = payload.project.id;
       activeSiteId = null;
@@ -1987,6 +2021,7 @@
     try {
       if (!("indexedDB" in window)) throw new Error("This browser does not support offline project storage.");
       db = await openDatabase();
+      await migratePointMeasurements();
       projects = await readProjects();
       restoreSelection();
       updateConnectionStatus();
