@@ -4,10 +4,12 @@
   const DB_NAME = "ves-field";
   const DB_VERSION = 1;
   const EXPORT_FORMAT = "ves-field-project";
+  const SELECTION_KEY = "ves-field-selection";
   const app = document.getElementById("app");
   const fileInput = document.getElementById("import-file");
   const installButton = document.getElementById("install-button");
   const updateButton = document.getElementById("update-button");
+  const appActions = document.getElementById("app-actions");
   let serviceWorkerControlsPage = Boolean(navigator.serviceWorker?.controller);
   let updateAvailable = false;
   let db;
@@ -18,16 +20,27 @@
   let showingBrowse = false;
   const collapsedSiteIds = new Set();
   let activeTarget = "A";
+  let projectSiteSelectorOpen = false;
+  let stationSelectorOpen = false;
+  let renderedProjectSiteKey = "";
+  let pointHistoryOpen = false;
+  let renderedStationId = null;
+  let lastSavedSelection = null;
+  let selectionSaveErrorShown = false;
   let currentPosition = null;
+  let locationError = "";
   let watchId = null;
+  let locationWatchGeneration = 0;
   let gpsOperation = "";
+  let pendingPositionRequest = null;
   let stopQrScanner = null;
   let compassHeading = null;
   let compassHeadingAbsolute = true;
   let compassListening = false;
   let compassNeedsPermission = false;
-  let compassPermissionAttempted = false;
+  let compassPermissionGranted = false;
   let compassError = "";
+  let compassWaitTimer = null;
   let lastOrientationAt = 0;
   let lastAbsoluteOrientationAt = 0;
   let deferredInstallPrompt = null;
@@ -40,6 +53,40 @@
   const selectedProject = () => projects.find((project) => project.id === activeProjectId);
   const selectedSite = () => selectedProject()?.sites.find((site) => site.id === activeSiteId);
   const selectedStation = () => selectedSite()?.stations.find((station) => station.id === activeStationId);
+
+  function restoreSelection() {
+    try {
+      const saved = localStorage.getItem(SELECTION_KEY);
+      if (saved === null) return;
+      const selection = JSON.parse(saved);
+      if (!selection || !["projectId", "siteId", "stationId"].every((key) =>
+        selection[key] === null || (typeof selection[key] === "string" && selection[key].length > 0))) {
+        throw new Error("Invalid saved selection.");
+      }
+      activeProjectId = projects.some((project) => project.id === selection.projectId) ? selection.projectId : null;
+      activeSiteId = selectedProject()?.sites.some((site) => site.id === selection.siteId) ? selection.siteId : null;
+      activeStationId = selectedSite()?.stations.some((station) => station.id === selection.stationId) ? selection.stationId : null;
+      lastSavedSelection = saved;
+      if (activeProjectId !== selection.projectId || activeSiteId !== selection.siteId || activeStationId !== selection.stationId) {
+        showToast("Some saved selections are no longer available.", true);
+      }
+    } catch (error) {
+      showToast(`Could not restore the last selection: ${error.message}`, true);
+    }
+  }
+
+  function saveSelection() {
+    const selection = JSON.stringify({ projectId: activeProjectId, siteId: activeSiteId, stationId: activeStationId });
+    if (selection === lastSavedSelection) return;
+    try {
+      localStorage.setItem(SELECTION_KEY, selection);
+      lastSavedSelection = selection;
+      selectionSaveErrorShown = false;
+    } catch (error) {
+      if (!selectionSaveErrorShown) showToast(`Could not save the selection: ${error.message}`, true);
+      selectionSaveErrorShown = true;
+    }
+  }
 
   function openDatabase() {
     return new Promise((resolve, reject) => {
@@ -80,11 +127,16 @@
   }
 
   function stopLocationWatch() {
+    locationWatchGeneration += 1;
     if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
     watchId = null;
+    currentPosition = null;
+    locationError = "";
   }
 
   function stopCompassWatch() {
+    clearTimeout(compassWaitTimer);
+    compassWaitTimer = null;
     if (!compassListening) return;
     window.removeEventListener("deviceorientation", updateCompassHeading);
     window.removeEventListener("deviceorientationabsolute", updateCompassHeading);
@@ -92,31 +144,20 @@
   }
 
   function startCompassWatch() {
-    if (compassListening || compassPermissionAttempted) return;
+    if (compassListening || document.hidden || showingBrowse || !selectedStation()) return;
     const orientationEvent = window.DeviceOrientationEvent;
-    if (orientationEvent && typeof orientationEvent.requestPermission === "function") {
-      compassPermissionAttempted = true;
+    if (!orientationEvent) {
+      compassNeedsPermission = false;
+      compassError = "Compass unavailable";
+      updateFieldMap();
+      return;
+    }
+    if (orientationEvent && typeof orientationEvent.requestPermission === "function" && !compassPermissionGranted) {
       compassNeedsPermission = true;
       compassError = "";
       updateFieldMap();
-      Promise.resolve().then(() => orientationEvent.requestPermission()).then((permission) => {
-        if (!selectedStation()) return;
-        if (permission === "granted") {
-          compassNeedsPermission = false;
-          attachCompassListeners();
-        } else {
-          compassNeedsPermission = false;
-          compassError = "Compass permission was denied.";
-        }
-        updateFieldMap();
-      }).catch((error) => {
-        if (!selectedStation()) return;
-        compassError = error.name === "NotAllowedError" ? "" : "Compass is unavailable.";
-        updateFieldMap();
-      });
       return;
     }
-    compassPermissionAttempted = true;
     compassNeedsPermission = false;
     compassError = "";
     attachCompassListeners();
@@ -134,10 +175,10 @@
         return;
       }
     }
-    compassPermissionAttempted = true;
+    compassPermissionGranted = true;
     compassNeedsPermission = false;
     compassError = "";
-    attachCompassListeners();
+    if (!document.hidden && !showingBrowse && selectedStation()) attachCompassListeners();
     updateFieldMap();
   }
 
@@ -146,6 +187,13 @@
       window.addEventListener("deviceorientation", updateCompassHeading);
       window.addEventListener("deviceorientationabsolute", updateCompassHeading);
       compassListening = true;
+      compassWaitTimer = setTimeout(() => {
+        compassWaitTimer = null;
+        if (compassHeading === null) {
+          compassError = "Compass unavailable";
+          updateFieldMap();
+        }
+      }, 8000);
     }
   }
 
@@ -154,7 +202,8 @@
     const hasAbsoluteHeading = Number.isFinite(event.webkitCompassHeading) ||
       Number.isFinite(event.compassHeading) ||
       (event.absolute && Number.isFinite(event.alpha));
-    if (!hasAbsoluteHeading && timestamp - lastOrientationAt < 80) return;
+    if (hasAbsoluteHeading) lastAbsoluteOrientationAt = timestamp;
+    if (timestamp - lastOrientationAt < 200) return;
     let heading;
     if (Number.isFinite(event.webkitCompassHeading)) {
       heading = event.webkitCompassHeading;
@@ -172,19 +221,25 @@
       return;
     }
     lastOrientationAt = timestamp;
-    if (compassHeadingAbsolute) lastAbsoluteOrientationAt = timestamp;
     compassHeading = normalizeAzimuth(heading);
+    compassError = "";
+    clearTimeout(compassWaitTimer);
+    compassWaitTimer = null;
     updateFieldMap();
   }
 
   function ensureLocationWatch() {
-    if (watchId !== null) return;
+    if (watchId !== null || document.hidden || showingBrowse) return;
     if (!navigator.geolocation) {
-      updateLiveReadout("Location is not supported by this browser.");
+      locationError = "Location is not supported by this browser.";
+      updateLiveReadout();
       return;
     }
+    const generation = ++locationWatchGeneration;
     watchId = navigator.geolocation.watchPosition(
       (position) => {
+        if (generation !== locationWatchGeneration) return;
+        locationError = "";
         currentPosition = {
           lat: position.coords.latitude,
           lon: position.coords.longitude,
@@ -194,12 +249,15 @@
         updateLiveReadout();
       },
       (error) => {
+        if (generation !== locationWatchGeneration) return;
+        currentPosition = null;
         const messages = {
           1: "Location permission was denied.",
           2: "Your current location is unavailable.",
           3: "Location request timed out."
         };
-        updateLiveReadout(messages[error.code] || "Could not read your location.");
+        locationError = messages[error.code] || "Could not read your location.";
+        updateLiveReadout();
       },
       { enableHighAccuracy: true, maximumAge: 3000, timeout: 20000 }
     );
@@ -253,14 +311,24 @@
   }
 
   function render() {
-    stopLocationWatch();
     const project = selectedProject();
+    if (!project) {
+      activeProjectId = null;
+      activeSiteId = null;
+      activeStationId = null;
+    } else if (!selectedSite()) {
+      activeSiteId = null;
+      activeStationId = null;
+    } else if (!selectedStation()) {
+      activeStationId = null;
+    }
+    saveSelection();
     if (showingBrowse && !project) {
+      stopLocationWatch();
       stopCompassWatch();
       compassHeading = null;
       compassHeadingAbsolute = true;
       compassNeedsPermission = false;
-      compassPermissionAttempted = false;
       compassError = "";
       activeSiteId = null;
       activeStationId = null;
@@ -269,23 +337,28 @@
     }
     const station = selectedStation();
     if (showingBrowse && project && !station) {
+      stopLocationWatch();
       stopCompassWatch();
       compassHeading = null;
       compassHeadingAbsolute = true;
       compassNeedsPermission = false;
-      compassPermissionAttempted = false;
       compassError = "";
       renderProject(project);
       return;
     }
     if (showingBrowse && project && station) {
+      stopLocationWatch();
       stopCompassWatch();
       renderStation(project, selectedSite(), station);
       return;
     }
     renderSurvey(project || null, selectedSite() || null, station || null);
     ensureLocationWatch();
-    startCompassWatch();
+    if (station) startCompassWatch();
+    else {
+      stopCompassWatch();
+      compassHeading = null;
+    }
   }
 
   function renderProjects() {
@@ -300,16 +373,14 @@
     }).join("");
     app.innerHTML = `${backButton("Back to acquisition", "capture-home")}
       <section class="page-heading">
-      <div><div class="eyebrow">FIELDWORK / PROJECTS</div><h1 class="page-title">Your field book.</h1>
-        <p class="page-intro">Organize VES stations, capture GPS positions, and keep working when you’re off the grid.</p></div>
-      <button class="button button-primary" data-action="new-project">＋ New project</button>
+      <div><h1 class="page-title">Projects</h1></div>
+      <button class="button button-primary" data-action="new-project" aria-label="Create new project">Create New</button>
     </section>
     ${projects.length ? `<section class="project-grid">${cards}</section>
       <div class="toolbar-row"><button class="button button-outline button-small" data-action="import-project">Import project file</button></div>`
       : `<section class="empty-state"><div class="empty-symbol" aria-hidden="true">⌖</div><h2>Start a field project</h2>
-        <p>Create a project to organize survey sites and VES stations.</p>
-        <button class="button button-primary" data-action="new-project">Create your first project</button>
-        <div class="toolbar-row" style="justify-content:center"><button class="button button-outline button-small" data-action="import-project">Import a project file</button></div>
+        <button class="button button-primary" data-action="new-project" aria-label="Create new project">Create New</button>
+        <div class="toolbar-row" style="justify-content:center"><button class="button button-outline button-small" data-action="import-project">Import project</button></div>
       </section>`}`;
   }
 
@@ -329,7 +400,7 @@
         </button>
         <div class="site-actions">
           <button class="icon-button" data-action="rename-site" data-id="${escapeHtml(site.id)}" aria-label="Rename ${escapeHtml(site.name)}" title="Rename site">✎</button>
-          <button class="button button-outline button-small" data-action="new-station" data-id="${escapeHtml(site.id)}">＋ VES station</button>
+          <button class="button button-outline button-small" data-action="new-station" data-id="${escapeHtml(site.id)}" aria-label="Create new station in ${escapeHtml(site.name)}">Create New</button>
         </div>
       </div>
       ${collapsed ? "" : site.stations.length ? `<div class="station-list">${site.stations.map((station) => {
@@ -354,8 +425,8 @@
         </div>
       </section>
       <section><div class="section-head"><h2>Survey sites <span class="project-meta">(${project.sites.length})</span></h2>
-        <button class="button button-outline button-small" data-action="new-site">＋ Add site</button></div>
-        <div class="site-stack">${siteCards || `<div class="empty-state"><div class="empty-symbol">⌖</div><h2>No sites in this project</h2><p>Add a site to start organizing your VES stations.</p><button class="button button-primary" data-action="new-site">Create Site 1</button></div>`}</div>
+        <button class="button button-outline button-small" data-action="new-site" aria-label="Create new site">Create New</button></div>
+        <div class="site-stack">${siteCards || `<div class="empty-state"><div class="empty-symbol">⌖</div><h2>No sites in this project</h2><p>Add a site to start organizing your VES stations.</p><button class="button button-primary" data-action="new-site" aria-label="Create new site">Create New</button></div>`}</div>
       </section>
       `;
   }
@@ -542,6 +613,7 @@
   }
 
   async function scanStationQr() {
+    if (stopQrScanner) return;
     if (!navigator.mediaDevices?.getUserMedia || typeof jsQR !== "function") {
       throw new Error("QR scanning requires a supported camera browser and an HTTPS connection.");
     }
@@ -551,11 +623,17 @@
       <h2 id="qr-scan-title">Scan station QR</h2>
       <p>Point the camera at another VES Field station QR code. Keep it centered and avoid glare; tap the preview to refocus if supported.</p>
       <video class="qr-scan-video" autoplay muted playsinline aria-label="Camera preview for QR scanning"></video>
+      <label class="field qr-camera-field" hidden><span>CAMERA</span><select aria-label="Camera"></select></label>
+      <div class="qr-camera-status" role="status"></div>
       <div class="gps-operation-status qr-scan-status" role="status">Starting camera and autofocus…</div>
       <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-qr">Cancel</button></div>
     </section>`;
     document.body.append(backdrop);
     const video = backdrop.querySelector("video");
+    const cameraField = backdrop.querySelector(".qr-camera-field");
+    const cameraSelect = cameraField.querySelector("select");
+    const cameraStatus = backdrop.querySelector(".qr-camera-status");
+    const status = backdrop.querySelector(".qr-scan-status");
     let stream = null;
     let animationFrame = 0;
     let lastScanAt = 0;
@@ -578,71 +656,137 @@
     backdrop.addEventListener("click", (event) => {
       if (event.target.closest('[data-action="close-qr"]')) stop();
     });
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 }
-      } });
-      if (closed) {
-        stream.getTracks().forEach((track) => track.stop());
-        return;
+
+    video.addEventListener("pointerup", async (event) => {
+      const track = stream?.getVideoTracks()[0];
+      if (closed || !track || !track.getCapabilities?.().focusMode?.includes("single-shot")) return;
+      event.preventDefault();
+      try {
+        await track.applyConstraints({ advanced: [{ focusMode: "single-shot" }] });
+        if (!closed && stream?.getVideoTracks()[0] === track) status.textContent = "Focused. Scanning for a VES Field code…";
+      } catch {
+        if (!closed && stream?.getVideoTracks()[0] === track) status.textContent = "Could not refocus. Move closer or improve the lighting.";
       }
-      video.srcObject = stream;
-      await video.play();
-      const status = backdrop.querySelector(".qr-scan-status");
-      const track = stream.getVideoTracks()[0];
-      const focusModes = track.getCapabilities?.().focusMode || [];
-      const supportsContinuousFocus = focusModes.includes("continuous");
-      const supportsSingleShotFocus = focusModes.includes("single-shot");
-      if (supportsContinuousFocus) {
-        try {
-          await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
-        } catch {
+    });
+
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    const scanFrame = (timestamp) => {
+      if (closed || !stream) return;
+      if (timestamp - lastScanAt >= 120 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) {
+        lastScanAt = timestamp;
+        const scale = Math.min(1, 960 / video.videoWidth);
+        canvas.width = Math.round(video.videoWidth * scale);
+        canvas.height = Math.round(video.videoHeight * scale);
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const image = context.getImageData(0, 0, canvas.width, canvas.height);
+        const result = jsQR(image.data, image.width, image.height, { inversionAttempts: "dontInvert" });
+        if (result) {
+          stop();
+          applyStationQrPayload(result.data).catch((error) => showToast(`Could not link station: ${error.message}`, true));
+          return;
+        }
+      }
+      animationFrame = requestAnimationFrame(scanFrame);
+    };
+
+    async function openCamera(deviceId) {
+      cancelAnimationFrame(animationFrame);
+      stream?.getTracks().forEach((track) => track.stop());
+      stream = null;
+      video.srcObject = null;
+      cameraSelect.disabled = true;
+      status.textContent = "Starting camera and autofocus…";
+      const videoConstraints = {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: "environment" } })
+      };
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints });
+        if (closed) {
+          newStream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        stream = newStream;
+        video.srcObject = stream;
+        await video.play();
+        if (closed) return;
+        const track = stream.getVideoTracks()[0];
+        if (!track) throw new Error("The selected camera has no video track.");
+        const focusModes = track.getCapabilities?.().focusMode || [];
+        const supportsContinuousFocus = focusModes.includes("continuous");
+        const supportsSingleShotFocus = focusModes.includes("single-shot");
+        if (supportsContinuousFocus) {
+          try {
+            await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+            if (!closed) status.textContent = "Scanning for a VES Field code… Autofocus is active.";
+          } catch {
+            if (closed) return;
+            status.textContent = supportsSingleShotFocus
+              ? "Continuous autofocus is unavailable. Tap the preview to focus."
+              : "Autofocus is unavailable. Hold steady and move closer until the code is sharp.";
+          }
+        } else {
           status.textContent = supportsSingleShotFocus
-            ? "Continuous autofocus is unavailable. Tap the preview to focus."
+            ? "Autofocus is off. Tap the preview to focus."
             : "Autofocus is unavailable. Hold steady and move closer until the code is sharp.";
         }
-      } else {
-        status.textContent = supportsSingleShotFocus
-          ? "Autofocus is off. Tap the preview to focus."
-          : "Autofocus is unavailable. Hold steady and move closer until the code is sharp.";
-      }
-      if (supportsSingleShotFocus) {
-        video.addEventListener("pointerup", async (event) => {
-          if (closed) return;
-          event.preventDefault();
-          try {
-            await track.applyConstraints({ advanced: [{ focusMode: "single-shot" }] });
-            status.textContent = "Focused. Scanning for a VES Field code…";
-          } catch {
-            status.textContent = "Could not refocus. Move closer or improve the lighting.";
-          }
-        });
-      }
-      if (supportsContinuousFocus) status.textContent = "Scanning for a VES Field code… Autofocus is active.";
-      const canvas = document.createElement("canvas");
-      const context = canvas.getContext("2d", { willReadFrequently: true });
-      if (!context) throw new Error("Could not start QR scanning.");
-      const scanFrame = (timestamp) => {
         if (closed) return;
-        if (timestamp - lastScanAt >= 120 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) {
-          lastScanAt = timestamp;
-          const scale = Math.min(1, 960 / video.videoWidth);
-          canvas.width = Math.round(video.videoWidth * scale);
-          canvas.height = Math.round(video.videoHeight * scale);
-          context.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const image = context.getImageData(0, 0, canvas.width, canvas.height);
-          const result = jsQR(image.data, image.width, image.height, { inversionAttempts: "dontInvert" });
-          if (result) {
-            stop();
-            applyStationQrPayload(result.data).catch((error) => showToast(`Could not link station: ${error.message}`, true));
-            return;
-          }
-        }
+        lastScanAt = 0;
         animationFrame = requestAnimationFrame(scanFrame);
-      };
-      scanFrame();
+      } catch (error) {
+        stream?.getTracks().forEach((track) => track.stop());
+        stream = null;
+        video.srcObject = null;
+        if (closed) return;
+        throw error;
+      } finally {
+        if (!closed) cameraSelect.disabled = false;
+      }
+    }
+
+    cameraSelect.addEventListener("change", async () => {
+      try {
+        await openCamera(cameraSelect.value);
+      } catch (error) {
+        if (!closed) {
+          cameraSelect.value = "";
+          status.textContent = `Could not switch camera: ${error.message || error.name}. Choose a camera to try again.`;
+        }
+      }
+    });
+    try {
+      if (!context) throw new Error("Could not start QR scanning.");
+      await openCamera();
+      if (closed) return;
+      if (!navigator.mediaDevices.enumerateDevices) {
+        cameraStatus.textContent = "Camera selection unavailable in this browser.";
+        return;
+      }
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        if (closed) return;
+        const cameras = devices.filter((device) => device.kind === "videoinput" && device.deviceId);
+        if (cameras.length > 1) {
+          const currentId = stream?.getVideoTracks()[0]?.getSettings?.().deviceId;
+          const placeholder = document.createElement("option");
+          placeholder.value = "";
+          placeholder.textContent = "Choose camera";
+          placeholder.disabled = true;
+          cameraSelect.append(placeholder);
+          cameras.forEach((camera, index) => {
+            const option = document.createElement("option");
+            option.value = camera.deviceId;
+            option.textContent = camera.label || `Camera ${index + 1}`;
+            cameraSelect.append(option);
+          });
+          cameraSelect.value = cameras.some((camera) => camera.deviceId === currentId) ? currentId : "";
+          cameraField.hidden = false;
+        }
+      } catch (error) {
+        if (!closed) cameraStatus.textContent = `Camera list unavailable: ${error.message || error.name}.`;
+      }
     } catch (error) {
       stop();
       document.removeEventListener("keydown", onKeyDown);
@@ -654,6 +798,20 @@
   }
 
   function renderSurvey(project, site, station) {
+    const selector = app.querySelector('[data-disclosure="project-site-selector"]');
+    const stationSelector = app.querySelector('[data-disclosure="station-selector"]');
+    const history = app.querySelector('[data-disclosure="point-history"]');
+    if (selector) projectSiteSelectorOpen = selector.open;
+    if (stationSelector) stationSelectorOpen = stationSelector.open;
+    if (history) pointHistoryOpen = history.open;
+    if ((station?.id || null) !== renderedStationId) {
+      stationSelectorOpen = false;
+      pointHistoryOpen = false;
+    }
+    const projectSiteKey = JSON.stringify([project?.id || null, site?.id || null]);
+    if (projectSiteKey !== renderedProjectSiteKey) projectSiteSelectorOpen = false;
+    renderedProjectSiteKey = projectSiteKey;
+    renderedStationId = station?.id || null;
     const captureView = !showingBrowse;
     const targetValue = station?.targets[activeTarget];
     const stationCoordinates = station?.midpoint;
@@ -663,78 +821,87 @@
     const pointMarkup = station ? renderPointItems(station) : "";
     const projectOptions = projects.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === activeProjectId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
     const siteOptions = (selectedProject()?.sites || []).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === activeSiteId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
-    const stationOptions = (selectedSite()?.stations || []).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === activeStationId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
+    const stationOptions = (site?.stations || []).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === activeStationId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
     const selectorRow = (label, selector, options, createAction, createLabel, uid, disabled = false) => `<div class="selector-row">
-      <label class="selector-field"><span>${label}</span><select data-select="${selector}" aria-label="${createLabel}" ${disabled ? "disabled" : ""}><option value="">Choose ${selector === "project" ? "project" : createLabel.toLowerCase()}</option>${options}</select>
-        <small class="selector-uid" title="${uid ? `UID: ${escapeHtml(uid)}` : "No item selected"}">UID · ${uid ? escapeHtml(uid) : "—"}</small></label>
-      <button class="button button-outline selector-add" data-action="${createAction}" aria-label="Add ${createLabel.toLowerCase()}" title="Add ${createLabel.toLowerCase()}" ${disabled ? "disabled" : ""}>+</button>
+      <label class="selector-field"><span>${label}</span><select data-select="${selector}" aria-label="${createLabel}" ${disabled ? "disabled" : ""}><option value="">Choose ${createLabel.toLowerCase()}</option>${options}</select>
+        <small class="selector-uid">UID · ${uid ? escapeHtml(uid) : "—"}</small></label>
+      <button class="button button-outline selector-add selector-add-text" data-action="${createAction}" aria-label="Create new ${createLabel.toLowerCase()}" ${disabled ? "disabled" : ""}>Create New</button>
     </div>`;
-    const captureSelector = captureView ? `<section class="acquisition-selector" aria-label="Choose survey station">
+    const shortUid = (id) => escapeHtml(id.length > 8 ? `${id.slice(0, 8)}…` : id);
+    const stationRow = selectorRow("STATION", "station", stationOptions, "quick-new-station", "Station", station?.id);
+    const captureSelector = captureView ? `<details class="acquisition-selector" data-disclosure="project-site-selector" ${!project || !site || projectSiteSelectorOpen ? "open" : ""}>
+        <summary class="acquisition-selector-summary">
+          <span><strong>${project && site ? `${escapeHtml(project.name)} / ${escapeHtml(site.name)}` : "Choose project and site"}</strong>
+            ${project || site ? `<small class="compact-uids">
+              ${project ? `<span title="Project UID · ${escapeHtml(project.id)}" aria-label="Project UID ${escapeHtml(project.id)}">P · ${shortUid(project.id)}</span>` : ""}
+              ${site ? `<span title="Site UID · ${escapeHtml(site.id)}" aria-label="Site UID ${escapeHtml(site.id)}">S · ${shortUid(site.id)}</span>` : ""}
+            </small>` : ""}</span>
+          <span class="disclosure-action">${project && site ? "Change" : "Select"}</span>
+        </summary>
         <div class="selector-grid">
-          ${selectorRow("PROJECT", "project", projectOptions, "new-project", "Project", selectedProject()?.id)}
-          ${selectorRow("SITE", "site", siteOptions, "new-site", "Site", selectedSite()?.id, !activeProjectId)}
-          ${selectorRow("STATION", "station", stationOptions, "quick-new-station", "Station", selectedStation()?.id, !activeSiteId)}
+          ${selectorRow("PROJECT", "project", projectOptions, "new-project", "Project", project?.id)}
+          ${selectorRow("SITE", "site", siteOptions, "new-site", "Site", site?.id, !project)}
         </div>
-      </section>` : backButton(`Back to ${project.name}`, "back");
-    const stationHeading = station ? `${escapeHtml(project.name)} / ${escapeHtml(site.name)} / ${escapeHtml(station.name)}` : "No station selected";
-    const acquisitionIntro = station
-      ? `${escapeHtml(station.name)} · Target A ${normalizeAzimuth(station.targets.A).toFixed(1)}° · B ${normalizeAzimuth(station.targets.B).toFixed(1)}°`
-      : "Your live GPS position appears here. Choose a station to calculate distance and azimuth or record a point.";
+      </details>
+      ${project && site ? `<section class="acquisition-station" aria-label="Station">
+        ${station ? `<div class="active-station">
+            <details class="station-selector" data-disclosure="station-selector" ${stationSelectorOpen ? "open" : ""}>
+              <summary class="acquisition-selector-summary"><span><strong>${escapeHtml(station.name)}</strong><small>UID · ${escapeHtml(station.id)}</small></span><span class="disclosure-action">Change</span></summary>
+              ${stationRow}
+              <div class="coordinate-row"><span>Coordinates</span><span>${stationCoordinatesText}</span></div>
+              <div class="coordinate-row"><span>GPS accuracy</span><span>${stationCoordinates?.accuracy == null ? "—" : `${stationCoordinates.accuracy.toFixed(1)} m`}</span></div>
+              <div class="coordinate-row"><span>Target A / B</span><span>${normalizeAzimuth(station.targets.A).toFixed(1)}° / ${normalizeAzimuth(station.targets.B).toFixed(1)}°</span></div>
+              <button class="button button-outline button-small station-setup-button" data-action="edit-station">Station setup</button>
+            </details>
+            <button class="button button-outline finish-station" data-action="finish-station" ${gpsOperation ? "disabled" : ""}>Finish</button>
+          </div>`
+          : site.stations.length ? stationRow
+          : `<button class="button button-primary add-first-station" data-action="quick-new-station" aria-label="Create new station">Create New</button>`}
+      </section>` : ""}` : backButton(`Back to ${project.name}`, "back");
     app.innerHTML = `${captureView ? `<div class="acquisition-topline">
         <button class="back-button" data-action="browse"><span aria-hidden="true">☷</span> Browse records</button>
-        <span class="acquisition-context">${stationHeading}</span>
         <div class="acquisition-qr-actions">
           <button class="button button-outline button-small" data-action="scan-station-qr">Scan QR</button>
           ${station ? `<button class="button button-outline button-small" data-action="share-station-qr">Share QR</button>` : ""}
         </div>
       </div>` : ""}
       ${captureSelector}
-      <section class="survey-header acquisition-heading">
-        <div><div class="eyebrow">${station ? "POINT ACQUISITION" : "GPS POSITION"}</div><h1 class="survey-title">${station ? escapeHtml(station.name) : "Current position"}</h1>
-          <div class="survey-target">${acquisitionIntro}</div></div>
-        ${!captureView ? `<div class="survey-actions"><button class="button button-outline button-small" data-action="rename-station">✎ Rename station</button>
-          <button class="button button-danger button-small" data-action="delete-station">Delete station</button></div>` : ""}
-      </section>
       ${station && !stationCoordinates ? `<section class="station-setup-alert" aria-labelledby="station-setup-title">
-        <div><h2 id="station-setup-title">Set station coordinates first</h2>
-          <p>Enter them manually or acquire them from GPS in Station setup.</p></div>
+        <div><h2 id="station-setup-title">Station coordinates needed</h2><p>Set coordinates to record points.</p></div>
         <button class="button button-primary" data-action="edit-station">Station setup</button>
       </section>` : ""}
       <section class="survey-layout ${station ? "" : "position-layout"}">
         <div class="readout-panel">
-          <div class="readout-top"><span>LIVE GPS READOUT</span><span class="gps-state waiting" id="gps-state"><span class="status-dot"></span><span id="gps-state-label">Finding GPS…</span></span></div>
+          <div class="readout-top"><h1>${station ? "Live readings" : "Current position"}</h1><span class="gps-state waiting" id="gps-state"><span class="status-dot"></span><span id="gps-state-label">Finding GPS…</span></span></div>
           <div class="readout-grid ${station ? "" : "position-only"}">
-            <div class="readout-cell"><span class="readout-label">Current position</span><span class="readout-value" id="current-position">—</span></div>
             ${station ? `<div class="readout-cell"><span class="readout-label">Distance from station</span><span class="readout-value large" id="current-distance">—</span></div>
-              <div class="readout-cell"><span class="readout-label">Current azimuth</span><span class="readout-value" id="current-azimuth">—</span><span class="readout-comparison" id="current-target-angle">Smallest angle to target ${activeTarget} · —</span></div>
-              <div class="readout-cell"><span class="readout-label">Target azimuth · <span id="target-label">${activeTarget}</span></span><span class="readout-value large" id="target-azimuth">${normalizeAzimuth(targetValue).toFixed(1)}°</span></div>` : `<div class="readout-cell"><span class="readout-label">GPS accuracy</span><span class="readout-value" id="gps-accuracy">—</span></div>`}
+              <div class="readout-cell"><span class="readout-label">Current azimuth</span><span class="readout-value large" id="current-azimuth">—</span><span class="readout-comparison" id="current-target-angle">To target ${activeTarget} · —</span></div>
+              <div class="readout-cell"><span class="readout-label">Target azimuth · <span id="target-label">${activeTarget}</span></span><span class="readout-value" id="target-azimuth">${normalizeAzimuth(targetValue).toFixed(1)}°</span></div>` : ""}
+            <div class="readout-cell"><span class="readout-label">Current position</span><span class="readout-value position-value" id="current-position">—</span></div>
+            ${station ? "" : `<div class="readout-cell"><span class="readout-label">GPS accuracy</span><span class="readout-value" id="gps-accuracy">—</span></div>`}
           </div>
-          <div class="readout-hint"><span id="gps-hint">Keep this screen open for continuous GPS updates.</span><button id="gps-retry" class="button button-quiet button-small" data-action="retry-location" hidden>Retry GPS</button></div>
+          <div class="readout-hint"><span id="gps-hint"></span><button id="gps-retry" class="button button-quiet button-small" data-action="retry-location" hidden>Retry GPS</button></div>
           <div id="gps-operation-status" class="gps-operation-status" role="status" aria-live="polite" hidden></div>
-          ${station ? `<div class="target-selectors" style="margin-top:13px">
-              <button class="target-chip target-chip-a ${activeTarget === "A" ? "active" : ""}" data-action="select-target" data-target="A">TARGET A</button>
-              <button class="target-chip target-chip-b ${activeTarget === "B" ? "active" : ""}" data-action="select-target" data-target="B">TARGET B</button>
+          ${station ? `<div class="target-selectors" aria-label="Target">
+              <button class="target-chip target-chip-a ${activeTarget === "A" ? "active" : ""}" data-action="select-target" data-target="A" aria-pressed="${activeTarget === "A"}">Target A</button>
+              <button class="target-chip target-chip-b ${activeTarget === "B" ? "active" : ""}" data-action="select-target" data-target="B" aria-pressed="${activeTarget === "B"}">Target B</button>
             </div>
             <button class="button button-accent button-target-${activeTarget.toLowerCase()} capture-button" id="capture-button" data-action="capture-point" disabled>◎ &nbsp; Record point for ${activeTarget}</button>`
-            : `<p class="capture-prompt">Select a station above to calculate station-relative readings and record a survey point.</p>`}
+            : ""}
         </div>
         ${station ? `<aside class="side-panel">
             ${renderDirectionMap(station)}
-            <section class="data-card"><h3>Acquired points <span class="project-meta">(${station.points.length})</span></h3><div class="point-list">${pointMarkup}</div></section>
-            <section class="data-card"><h3>Station coordinates</h3>
-              <div class="coordinate-row"><span>Coordinates</span><span>${stationCoordinatesText}</span></div>
-              <div class="coordinate-row"><span>GPS accuracy</span><span>${stationCoordinates?.accuracy == null ? "—" : `${stationCoordinates.accuracy.toFixed(1)} m`}</span></div>
-              ${stationCoordinates ? `<button class="button button-outline button-small station-setup-button" data-action="edit-station">Station setup</button>` : ""}
-            </section>
+            <details class="data-card detail-card" data-disclosure="point-history" ${pointHistoryOpen ? "open" : ""}><summary>Points <span class="detail-count">${station.points.length}</span></summary><div class="point-list">${pointMarkup}</div></details>
           </aside>` : ""}
       </section>`;
     updateLiveReadout();
+    updateGpsOperation();
   }
 
   function renderDirectionMap(station) {
     return `<section class="map-card">
       <div class="map-card-header">
-        <div><span class="map-kicker">FIELD MAP</span><h3>Position &amp; target directions</h3></div>
+        <div><h3>Field map</h3></div>
         <div class="map-compass-control">
           <span class="map-compass-status" id="compass-status"></span>
           <button class="compass-enable" id="compass-enable" data-action="enable-compass" hidden>Enable compass</button>
@@ -766,7 +933,7 @@
           </g>
           <rect class="map-border" x="40" y="20" width="240" height="240" rx="2"></rect>
           <circle class="map-midpoint" cx="160" cy="140" r="5"></circle>
-          <g class="map-target-compass">
+          <g class="map-target-compass" hidden>
             <circle cx="252" cy="53" r="22"></circle>
             <path class="target-compass-forward" d="M252 43L247 58L252 55L257 58Z"></path>
             <g id="map-compass-north-arrow">
@@ -793,7 +960,7 @@
         <span class="${activeTarget === "A" ? "selected" : ""}"><i class="legend-target-a"></i>A direction</span>
         <span class="${activeTarget === "B" ? "selected" : ""}"><i class="legend-target-b"></i>B direction</span>
         <span><i class="legend-recorded"></i>Recorded points</span>
-        <span><i class="legend-current"></i>Position / heading</span>
+        <span><i class="legend-current"></i><span id="map-position-legend">Position</span></span>
       </div>
     </section>`;
   }
@@ -858,6 +1025,8 @@
     setRay("map-target-a", targetA, "A");
     setRay("map-target-b", targetB, "B");
     const selectedBearing = activeTarget === "A" ? targetA : targetB;
+    document.querySelector(".map-target-compass").toggleAttribute("hidden", compassHeading === null);
+    document.getElementById("map-position-legend").textContent = compassHeading === null ? "Position" : "Position / heading";
     const headingOffset = compassHeading ?? 0;
     const northAngle = -headingOffset * Math.PI / 180;
     document.getElementById("map-compass-north-arrow").setAttribute(
@@ -912,7 +1081,7 @@
     document.getElementById("compass-enable").hidden = compassHeading !== null || !compassNeedsPermission;
   }
 
-  function updateLiveReadout(errorMessage = "") {
+  function updateLiveReadout(errorMessage = locationError) {
     const positionEl = document.getElementById("current-position");
     if (!positionEl) return;
     const label = document.getElementById("gps-state-label");
@@ -935,7 +1104,7 @@
       if (distance) distance.textContent = "—";
       if (azimuth) azimuth.textContent = "—";
       const targetAngle = document.getElementById("current-target-angle");
-      if (targetAngle) targetAngle.textContent = `Smallest angle to target ${activeTarget} · —`;
+      if (targetAngle) targetAngle.textContent = `To target ${activeTarget} · —`;
       updateFieldMap();
       return;
     }
@@ -943,14 +1112,15 @@
       positionEl.textContent = "Waiting for signal";
       label.textContent = "Finding GPS…";
       status.classList.add("waiting");
+      hint.textContent = station?.midpoint ? "Recording will request a GPS fix." : station ? "Set station coordinates to record." : "";
       retry.hidden = true;
       if (capture) capture.disabled = Boolean(gpsOperation) || !station?.midpoint;
       const accuracy = document.getElementById("gps-accuracy");
       if (accuracy) accuracy.textContent = "—";
       if (station) {
-        document.getElementById("current-distance").textContent = station.midpoint ? "Waiting for GPS" : "—";
+        document.getElementById("current-distance").textContent = "—";
         document.getElementById("current-azimuth").textContent = "—";
-        document.getElementById("current-target-angle").textContent = `Smallest angle to target ${activeTarget} · —`;
+        document.getElementById("current-target-angle").textContent = `To target ${activeTarget} · —`;
       }
       updateFieldMap();
       return;
@@ -962,8 +1132,8 @@
     hint.textContent = station?.midpoint
       ? `Updated ${new Date(currentPosition.capturedAt).toLocaleTimeString()}.`
       : station
-        ? "Set station coordinates to calculate distance and azimuth."
-        : "Choose a station to calculate station-relative readings and record a point.";
+        ? "Set station coordinates."
+        : "";
     if (capture) capture.disabled = Boolean(gpsOperation) || !station?.midpoint;
     const accuracy = document.getElementById("gps-accuracy");
     if (accuracy) accuracy.textContent = `±${currentPosition.accuracy.toFixed(1)} m`;
@@ -975,8 +1145,8 @@
     const targetAngle = document.getElementById("current-target-angle");
     if (targetAngle) {
       targetAngle.textContent = measure
-        ? `Smallest angle to target ${activeTarget} · ${smallestAzimuthDifference(measure.bearing, station.targets[activeTarget]).toFixed(1)}°`
-        : `Smallest angle to target ${activeTarget} · —`;
+        ? `To target ${activeTarget} · ${smallestAzimuthDifference(measure.bearing, station.targets[activeTarget]).toFixed(1)}°`
+        : `To target ${activeTarget} · —`;
     }
     updateFieldMap();
   }
@@ -1033,7 +1203,7 @@
       const match = project.name.match(/^VES (?:Project|Survey)\s+(\d+)$/i);
       return match ? Math.max(max, Number(match[1])) : max;
     }, 0) + 1;
-    const values = await openModal({ title: "New project", description: "Give this survey project a name.", fields: [{ name: "name", label: "PROJECT NAME", value: `VES Project ${nextProjectNumber}`, required: true, autofocus: true }] });
+    const values = await openModal({ title: "New project", description: "Give this survey project a name.", submitLabel: "Create New", fields: [{ name: "name", label: "PROJECT NAME", value: `VES Project ${nextProjectNumber}`, required: true, autofocus: true }] });
     if (!values) return;
     const project = { id: newId(), name: values.name.trim(), createdAt: now(), updatedAt: now(), sites: [] };
     projects.push(project);
@@ -1050,7 +1220,7 @@
       showToast("Choose or create a project before adding a site.", true);
       return;
     }
-    const values = await openModal({ title: "Add survey site", fields: [{ name: "name", label: "SITE NAME", value: `Site ${project.sites.length + 1}`, required: true, autofocus: true }] });
+    const values = await openModal({ title: "Add survey site", submitLabel: "Create New", fields: [{ name: "name", label: "SITE NAME", value: `Site ${project.sites.length + 1}`, required: true, autofocus: true }] });
     if (!values) return;
     const site = { id: newId(), name: values.name.trim(), createdAt: now(), updatedAt: now(), stations: [] };
     project.sites.push(site);
@@ -1061,19 +1231,125 @@
     render();
   }
 
+  function openStationForm({ site, station = null }) {
+    const creating = !station;
+    const nameValue = creating ? `VES ${site.stations.length + 1}` : station.name;
+    const latitudeValue = station?.midpoint ? String(station.midpoint.lat) : "";
+    const longitudeValue = station?.midpoint ? String(station.midpoint.lon) : "";
+    const targetA = creating ? "0" : String(normalizeAzimuth(station.targets.A));
+    const targetB = creating ? "180" : String(normalizeAzimuth(station.targets.B));
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `<form class="modal station-setup-modal" role="dialog" aria-modal="true" aria-labelledby="station-form-title">
+      <h2 id="station-form-title">${creating ? "New VES station" : "Station setup"}</h2>
+      ${creating ? "" : "<p>Changes are confirmed before saving.</p>"}
+      <label class="field"><span>STATION NAME</span><input name="name" value="${escapeHtml(nameValue)}" required></label>
+      <fieldset class="station-coordinate-fields">
+        <legend>STATION COORDINATES</legend>
+        <div class="station-coordinate-inputs">
+          <label class="field"><span>LATITUDE (−90 TO 90)</span><input name="latitude" type="number" min="-90" max="90" step="any" value="${escapeHtml(latitudeValue)}" inputmode="decimal" ${creating ? "required" : ""}></label>
+          <label class="field"><span>LONGITUDE (−180 TO 180)</span><input name="longitude" type="number" min="-180" max="180" step="any" value="${escapeHtml(longitudeValue)}" inputmode="decimal" ${creating ? "required" : ""}></label>
+          <button class="button button-outline gps-coordinate-button" type="button" data-action="fill-gps-coordinates">◎ Get GPS fix</button>
+        </div>
+        <div class="station-setup-gps-status" role="status" aria-live="polite"></div>
+      </fieldset>
+      <div class="station-coordinate-inputs station-azimuth-fields">
+        <label class="field"><span>TARGET AZIMUTH A (${creating ? "DEGREES" : "0–&lt;360°"})</span><input name="targetA" type="number" min="0" max="${creating ? "360" : "359.999999"}" step="${creating ? "0.1" : "any"}" value="${escapeHtml(targetA)}" required inputmode="decimal"></label>
+        <label class="field"><span>TARGET AZIMUTH B (${creating ? "DEGREES" : "0–&lt;360°"})</span><input name="targetB" type="number" min="0" max="${creating ? "360" : "359.999999"}" step="${creating ? "0.1" : "any"}" value="${escapeHtml(targetB)}" required inputmode="decimal"></label>
+      </div>
+      <div class="azimuth-separation"></div>
+      <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">${creating ? "Create New" : "Review changes"}</button></div>
+    </form>`;
+    document.body.append(backdrop);
+    const form = backdrop.querySelector("form");
+    const latitude = form.elements.namedItem("latitude");
+    const longitude = form.elements.namedItem("longitude");
+    const gpsButton = form.querySelector('[data-action="fill-gps-coordinates"]');
+    const gpsStatus = form.querySelector(".station-setup-gps-status");
+    form.elements.namedItem("name").addEventListener("input", (event) => event.target.setCustomValidity(""));
+    const updateSeparation = () => updateAzimuthSeparation(form.querySelector(".azimuth-separation"), form);
+    form.elements.namedItem("targetA").addEventListener("input", updateSeparation);
+    form.elements.namedItem("targetB").addEventListener("input", updateSeparation);
+    updateSeparation();
+    let gpsPosition = null;
+    let coordinateRevision = 0;
+    for (const input of [latitude, longitude]) {
+      input.addEventListener("input", () => {
+        input.setCustomValidity("");
+        coordinateRevision += 1;
+        gpsPosition = null;
+        gpsStatus.textContent = "Manual coordinates.";
+      });
+    }
+
+    async function fillFromGps() {
+      const revision = coordinateRevision;
+      gpsButton.disabled = true;
+      gpsStatus.textContent = "Getting a GPS fix…";
+      try {
+        const position = await getFreshPosition();
+        if (!backdrop.isConnected) return;
+        if (!position) {
+          gpsStatus.textContent = "GPS unavailable. Enter coordinates or try again.";
+        } else if (revision !== coordinateRevision) {
+          gpsStatus.textContent = "Coordinates edited; GPS fix not applied.";
+        } else {
+          gpsPosition = position;
+          latitude.value = String(position.lat);
+          longitude.value = String(position.lon);
+          latitude.setCustomValidity("");
+          longitude.setCustomValidity("");
+          gpsStatus.textContent = `GPS accuracy ±${position.accuracy.toFixed(1)} m`;
+        }
+      } catch (error) {
+        if (backdrop.isConnected) gpsStatus.textContent = `GPS error: ${error.message}`;
+      } finally {
+        if (backdrop.isConnected) gpsButton.disabled = false;
+      }
+    }
+
+    gpsButton.addEventListener("click", fillFromGps);
+    (creating ? form.elements.namedItem("name") : gpsButton).focus();
+    return { backdrop, form, latitude, longitude, fillFromGps, getGpsPosition: () => gpsPosition };
+  }
+
+  function openNewStationModal(site) {
+    const { backdrop, form, latitude, longitude, fillFromGps, getGpsPosition } = openStationForm({ site });
+    return new Promise((resolve) => {
+      const close = (value) => { backdrop.remove(); resolve(value); };
+      backdrop.addEventListener("click", (event) => {
+        if (event.target.closest('[data-action="close-modal"]')) close(null);
+      });
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const name = form.elements.namedItem("name");
+        name.setCustomValidity(name.value.trim() ? "" : "Please enter a name.");
+        if (!form.reportValidity()) return;
+        const lat = latitude.valueAsNumber;
+        const lon = longitude.valueAsNumber;
+        const gpsPosition = getGpsPosition();
+        const midpoint = gpsPosition && gpsPosition.lat === lat && gpsPosition.lon === lon
+          ? { ...gpsPosition }
+          : { lat, lon, accuracy: null, capturedAt: now() };
+        close({ name: name.value.trim(), targetA: form.elements.namedItem("targetA").value,
+          targetB: form.elements.namedItem("targetB").value, midpoint });
+      });
+      fillFromGps();
+    });
+  }
+
   async function createStation(siteId, acquire = false) {
     const project = selectedProject();
     const site = project?.sites.find((item) => item.id === siteId);
     if (!site) return;
-    const values = await openModal({ title: "New VES station", description: "Set station coordinates before point capture. You can use your current GPS position now or set them later.", fields: [
-      { name: "name", label: "STATION NAME", value: `VES ${site.stations.length + 1}`, required: true, autofocus: true },
-      { name: "targetA", label: "TARGET AZIMUTH A (DEGREES)", type: "number", value: "0", min: "0", max: "360", step: "0.1", required: true },
-      { name: "targetB", label: "TARGET AZIMUTH B (DEGREES)", type: "number", value: "180", min: "0", max: "360", step: "0.1", required: true },
-      { name: "useCurrentCoordinates", label: "Use current GPS position as station coordinates", type: "checkbox", checked: true }
-    ] });
+    const values = await openNewStationModal(site);
     if (!values) return;
+    if (selectedProject() !== project || !project.sites.includes(site)) {
+      showToast("Could not create the station because the site is no longer available.", true);
+      return;
+    }
     const station = { id: newId(), name: values.name.trim(), createdAt: now(), updatedAt: now(),
-      targets: { A: normalizeAzimuth(values.targetA), B: normalizeAzimuth(values.targetB) }, midpoint: null, points: [] };
+      targets: { A: normalizeAzimuth(values.targetA), B: normalizeAzimuth(values.targetB) }, midpoint: values.midpoint, points: [] };
     site.stations.push(station);
     site.updatedAt = now();
     project.updatedAt = now();
@@ -1085,7 +1361,6 @@
       activeTarget = "A";
     }
     render();
-    if (values.useCurrentCoordinates === "on") await setStationCoordinates(station, project);
   }
 
   async function renameEntity(entity, type) {
@@ -1167,70 +1442,12 @@
       showToast("Choose a station before editing its setup.", true);
       return;
     }
-    const backdrop = document.createElement("div");
-    backdrop.className = "modal-backdrop";
-    backdrop.innerHTML = `<form class="modal station-setup-modal" role="dialog" aria-modal="true" aria-labelledby="station-setup-modal-title">
-      <h2 id="station-setup-modal-title">Station setup</h2>
-      <p>Edit station coordinates and target azimuths. Changes are confirmed before they are saved.</p>
-      <fieldset class="station-coordinate-fields">
-        <legend>STATION COORDINATES</legend>
-        <div class="station-coordinate-inputs">
-          <label class="field"><span>LATITUDE (−90 TO 90)</span><input name="latitude" type="number" min="-90" max="90" step="any" value="${station.midpoint ? escapeHtml(String(station.midpoint.lat)) : ""}" inputmode="decimal"></label>
-          <label class="field"><span>LONGITUDE (−180 TO 180)</span><input name="longitude" type="number" min="-180" max="180" step="any" value="${station.midpoint ? escapeHtml(String(station.midpoint.lon)) : ""}" inputmode="decimal"></label>
-          <button class="button button-outline gps-coordinate-button" type="button" data-action="fill-gps-coordinates">◎ Acquire GPS coordinates</button>
-        </div>
-        <div class="station-setup-gps-status" role="status" aria-live="polite"></div>
-      </fieldset>
-      <div class="station-coordinate-inputs station-azimuth-fields">
-        <label class="field"><span>TARGET AZIMUTH A (0–&lt;360°)</span><input name="targetA" type="number" min="0" max="359.999999" step="any" value="${escapeHtml(String(normalizeAzimuth(station.targets.A)))}" required inputmode="decimal"></label>
-        <label class="field"><span>TARGET AZIMUTH B (0–&lt;360°)</span><input name="targetB" type="number" min="0" max="359.999999" step="any" value="${escapeHtml(String(normalizeAzimuth(station.targets.B)))}" required inputmode="decimal"></label>
-      </div>
-      <div class="azimuth-separation"></div>
-      <div class="modal-actions"><button class="button button-outline" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">Review changes</button></div>
-    </form>`;
-    document.body.append(backdrop);
-    const form = backdrop.querySelector("form");
-    const latitude = form.elements.namedItem("latitude");
-    const longitude = form.elements.namedItem("longitude");
-    const gpsButton = form.querySelector('[data-action="fill-gps-coordinates"]');
-    const gpsStatus = form.querySelector(".station-setup-gps-status");
-    const azimuthSeparation = form.querySelector(".azimuth-separation");
-    const updateSeparation = () => updateAzimuthSeparation(azimuthSeparation, form);
-    form.elements.namedItem("targetA").addEventListener("input", updateSeparation);
-    form.elements.namedItem("targetB").addEventListener("input", updateSeparation);
-    updateSeparation();
-    let gpsPosition = null;
-    gpsButton.focus();
-
+    const { backdrop, form, latitude, longitude, getGpsPosition } = openStationForm({ station });
+    const name = form.elements.namedItem("name");
     const close = () => backdrop.remove();
     backdrop.addEventListener("click", (event) => {
       if (event.target.closest('[data-action="close-modal"]')) close();
-      if (event.target.closest('[data-action="fill-gps-coordinates"]')) {
-        gpsButton.disabled = true;
-        gpsStatus.textContent = "Acquiring a GPS fix…";
-        getFreshPosition().then((position) => {
-          if (!backdrop.isConnected) return;
-          if (position) {
-            gpsPosition = position;
-            latitude.value = String(position.lat);
-            longitude.value = String(position.lon);
-            gpsStatus.textContent = `GPS fix acquired · accuracy ±${position.accuracy.toFixed(1)} m`;
-          } else {
-            gpsStatus.textContent = "Could not acquire GPS coordinates.";
-          }
-        }).catch((error) => {
-          if (backdrop.isConnected) gpsStatus.textContent = `Could not acquire GPS coordinates: ${error.message}`;
-        }).finally(() => {
-          if (backdrop.isConnected) gpsButton.disabled = false;
-        });
-      }
     });
-    for (const input of [latitude, longitude]) {
-      input.addEventListener("input", () => {
-        input.setCustomValidity("");
-        gpsPosition = null;
-      });
-    }
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const latitudeText = latitude.value.trim();
@@ -1243,7 +1460,8 @@
         missing.reportValidity();
         return;
       }
-      const inputs = [latitude, longitude, form.elements.namedItem("targetA"), form.elements.namedItem("targetB")];
+      name.setCustomValidity(name.value.trim() ? "" : "Please enter a name.");
+      const inputs = [name, latitude, longitude, form.elements.namedItem("targetA"), form.elements.namedItem("targetB")];
       for (const input of inputs) {
         if (!input.reportValidity()) return;
       }
@@ -1263,15 +1481,19 @@
       }
 
       const targets = { A: normalizeAzimuth(targetA), B: normalizeAzimuth(targetB) };
+      const stationName = name.value.trim();
+      const nameChanged = stationName !== station.name;
+      const gpsPosition = getGpsPosition();
       const coordinatesChanged = hasCoordinates && (!station.midpoint || station.midpoint.lat !== lat || station.midpoint.lon !== lon ||
         (gpsPosition && station.midpoint.accuracy !== gpsPosition.accuracy));
       const targetChanged = targets.A !== normalizeAzimuth(station.targets.A) || targets.B !== normalizeAzimuth(station.targets.B);
-      if (!coordinatesChanged && !targetChanged) {
+      if (!nameChanged && !coordinatesChanged && !targetChanged) {
         close();
         showToast("No station setup changes.");
         return;
       }
       const changes = [];
+      if (nameChanged) changes.push(`Rename station to ${stationName}.`);
       if (coordinatesChanged) {
         changes.push(gpsPosition && gpsPosition.lat === lat && gpsPosition.lon === lon
           ? `Set station coordinates to ${formatCoord(lat)}, ${formatCoord(lon)} using GPS (accuracy ±${gpsPosition.accuracy.toFixed(1)} m).`
@@ -1290,6 +1512,7 @@
         showToast("Could not save station setup because the selected station changed.", true);
         return;
       }
+      station.name = stationName;
       station.targets = targets;
       if (coordinatesChanged) {
         station.midpoint = gpsPosition && gpsPosition.lat === lat && gpsPosition.lon === lon
@@ -1309,18 +1532,21 @@
       showToast("This browser does not support GPS location.", true);
       return Promise.resolve(null);
     }
+    if (pendingPositionRequest) return pendingPositionRequest;
     const positionAge = currentPosition ? Date.now() - Date.parse(currentPosition.capturedAt) : Infinity;
     if (Number.isFinite(positionAge) && positionAge >= 0 && positionAge <= 5000) {
       return Promise.resolve(currentPosition);
     }
-    return new Promise((resolve) => {
+    pendingPositionRequest = new Promise((resolve) => {
       gpsOperation = "Getting a fresh GPS fix…";
       updateGpsOperation();
       navigator.geolocation.getCurrentPosition((position) => {
         const value = { lat: position.coords.latitude, lon: position.coords.longitude, accuracy: position.coords.accuracy, capturedAt: new Date(position.timestamp).toISOString() };
         currentPosition = value;
+        locationError = "";
         gpsOperation = "";
         updateLiveReadout();
+        updateGpsOperation();
         resolve(value);
       }, (error) => {
         const message = error.code === 1 ? "Allow location access in your browser settings, then try again." : "Could not get a GPS fix. Move to an open area and try again.";
@@ -1329,7 +1555,8 @@
         showToast(message, true);
         resolve(null);
       }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
-    });
+    }).finally(() => { pendingPositionRequest = null; });
+    return pendingPositionRequest;
   }
 
   function updateGpsOperation() {
@@ -1343,50 +1570,14 @@
       captureButton.disabled = Boolean(gpsOperation) || !selectedStation()?.midpoint;
       captureButton.textContent = gpsOperation ? `◎ ${gpsOperation}` : `◎ Record point for ${activeTarget}`;
     }
-    document.querySelectorAll('[data-action="set-station-coordinates"]').forEach((button) => {
-      button.disabled = Boolean(gpsOperation);
-      if (gpsOperation) button.dataset.idleLabel ||= button.textContent;
-      button.textContent = gpsOperation || button.dataset.idleLabel || button.textContent;
-    });
-  }
-
-  async function setStationCoordinates(station = selectedStation(), project = selectedProject()) {
-    if (!station || !project || !project.sites.some((site) => site.stations.includes(station))) {
-      showToast("Could not save station coordinates because the station is no longer available.", true);
-      return;
-    }
-    const confirmed = await openModal({
-      title: station.midpoint ? "Replace station coordinates?" : "Set station coordinates?",
-      description: station.midpoint
-        ? "The saved station coordinates will be replaced with a new GPS fix. This can change all station-relative distance and azimuth readings."
-        : "The current GPS position will become this station's reference location. You need station coordinates to calculate distances and capture points.",
-      fields: [],
-      submitLabel: station.midpoint ? "Replace coordinates" : "Set coordinates"
-    });
-    if (!confirmed) return;
-    const position = await getFreshPosition();
-    if (!position) return;
-    if (!station || !project || !project.sites.some((site) => site.stations.includes(station))) {
-      showToast("Could not save station coordinates because the station is no longer available.", true);
-      return;
-    }
-    station.midpoint = { ...position };
-    station.updatedAt = now();
-    project.updatedAt = now();
-    gpsOperation = "Saving station coordinates…";
-    updateGpsOperation();
-    try {
-      await persist();
-    } finally {
-      gpsOperation = "";
-      updateGpsOperation();
-    }
-    showToast("Station coordinates saved from GPS.");
-    render();
+    const finishButton = app.querySelector('[data-action="finish-station"]');
+    if (finishButton) finishButton.disabled = Boolean(gpsOperation);
   }
 
   async function capturePoint() {
     const station = selectedStation();
+    const project = selectedProject();
+    const target = activeTarget;
     if (!station) {
       showToast("Choose a station before recording a point.", true);
       return;
@@ -1397,14 +1588,18 @@
     }
     const position = await getFreshPosition();
     if (!position) return;
+    if (selectedProject() !== project || selectedStation() !== station || activeTarget !== target) {
+      showToast("Station or target changed. Record the point again.", true);
+      return;
+    }
     const measure = station.midpoint ? distanceAndBearing(station.midpoint, position) : null;
     station.points.push({
-      id: newId(), target: activeTarget, lat: position.lat, lon: position.lon, accuracy: position.accuracy,
+      id: newId(), target, lat: position.lat, lon: position.lon, accuracy: position.accuracy,
       capturedAt: now(), distanceMeters: measure?.distance ?? null, bearingDegrees: measure?.bearing ?? null,
-      targetAzimuth: normalizeAzimuth(station.targets[activeTarget])
+      targetAzimuth: normalizeAzimuth(station.targets[target])
     });
     station.updatedAt = now();
-    selectedProject().updatedAt = now();
+    project.updatedAt = now();
     gpsOperation = "Saving point…";
     updateGpsOperation();
     try {
@@ -1413,7 +1608,7 @@
       gpsOperation = "";
       updateGpsOperation();
     }
-    showToast(`Point recorded for target ${activeTarget}.`);
+    showToast(`Point recorded for target ${target}.`);
     render();
   }
 
@@ -1586,8 +1781,11 @@
       activeSiteId = value;
       activeStationId = null;
     } else if (selector.dataset.select === "station") {
+      if (value !== activeStationId) activeTarget = "A";
       activeStationId = value;
-      activeTarget = "A";
+      const stationDetails = selector.closest('[data-disclosure="station-selector"]');
+      if (stationDetails) stationDetails.open = false;
+      stationSelectorOpen = false;
     }
     render();
   });
@@ -1598,7 +1796,7 @@
     const action = target.dataset.action;
     try {
       if (action === "new-project") await createProject();
-      else if (action === "browse") { showingBrowse = true; renderProjects(); }
+      else if (action === "browse") { showingBrowse = true; pauseFieldSensors(); renderProjects(); }
       else if (action === "capture-home") { showingBrowse = false; render(); }
       else if (action === "acquire-points") { showingBrowse = false; activeTarget = "A"; render(); }
       else if (action === "share-station-qr") showStationQr();
@@ -1617,6 +1815,12 @@
       else if (action === "new-site") await createSite();
       else if (action === "new-station") await createStation(target.dataset.id);
       else if (action === "quick-new-station") await createStation(activeSiteId, true);
+      else if (action === "finish-station") {
+        if (gpsOperation) return;
+        activeStationId = null;
+        render();
+        app.querySelector('[data-select="station"]')?.focus({ preventScroll: true });
+      }
       else if (action === "rename-project") await renameEntity(selectedProject(), "project");
       else if (action === "delete-project") await deleteProject();
       else if (action === "rename-site") { event.stopPropagation(); const site = selectedProject().sites.find((item) => item.id === target.dataset.id); await renameEntity(site, "site"); }
@@ -1629,7 +1833,12 @@
         renderProject(selectedProject());
       }
       else if (action === "open-station") { showingBrowse = true; activeSiteId = target.dataset.siteId; activeStationId = target.dataset.id; activeTarget = "A"; render(); }
-      else if (action === "select-target") { activeTarget = target.dataset.target; renderSurvey(selectedProject(), selectedSite(), selectedStation()); ensureLocationWatch(); }
+      else if (action === "select-target") {
+        activeTarget = target.dataset.target;
+        renderSurvey(selectedProject(), selectedSite(), selectedStation());
+        ensureLocationWatch();
+        app.querySelector(`[data-action="select-target"][data-target="${activeTarget}"]`)?.focus({ preventScroll: true });
+      }
       else if (action === "enable-compass") {
         try {
           await requestCompassPermission();
@@ -1639,7 +1848,6 @@
           throw error;
         }
       }
-      else if (action === "set-station-coordinates") await setStationCoordinates();
       else if (action === "capture-point") await capturePoint();
       else if (action === "retry-location") {
         stopLocationWatch();
@@ -1672,7 +1880,29 @@
 
   window.addEventListener("online", updateConnectionStatus);
   window.addEventListener("offline", updateConnectionStatus);
-  window.addEventListener("pagehide", () => stopQrScanner?.());
+  function pauseFieldSensors() {
+    stopLocationWatch();
+    stopCompassWatch();
+    compassHeading = null;
+    lastOrientationAt = 0;
+    lastAbsoluteOrientationAt = 0;
+    stopQrScanner?.();
+    updateLiveReadout();
+  }
+  function resumeFieldSensors() {
+    if (document.hidden || showingBrowse) return;
+    updateLiveReadout();
+    ensureLocationWatch();
+    startCompassWatch();
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) pauseFieldSensors();
+    else resumeFieldSensors();
+  });
+  window.addEventListener("pagehide", pauseFieldSensors);
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) resumeFieldSensors();
+  });
   navigator.serviceWorker?.addEventListener("message", (event) => {
     if (event.data?.type === "APP_VERSION") {
       document.getElementById("app-version").textContent = `App version ${event.data.version}`;
@@ -1684,6 +1914,7 @@
     if (serviceWorkerControlsPage) {
       updateAvailable = true;
       updateButton.hidden = false;
+      updateAppActions();
     } else {
       serviceWorkerControlsPage = true;
     }
@@ -1699,10 +1930,15 @@
     status.innerHTML = `<span class="status-dot"></span> ${navigator.onLine ? "Online" : "Offline ready"}`;
   }
 
+  function updateAppActions() {
+    appActions.hidden = updateButton.hidden && installButton.hidden;
+  }
+
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     deferredInstallPrompt = event;
     installButton.hidden = false;
+    updateAppActions();
   });
   installButton.addEventListener("click", async () => {
     if (!deferredInstallPrompt) return;
@@ -1710,6 +1946,7 @@
     await deferredInstallPrompt.userChoice;
     deferredInstallPrompt = null;
     installButton.hidden = true;
+    updateAppActions();
   });
 
   function updateApp() {
@@ -1732,6 +1969,7 @@
       if (!("indexedDB" in window)) throw new Error("This browser does not support offline project storage.");
       db = await openDatabase();
       projects = await readProjects();
+      restoreSelection();
       updateConnectionStatus();
       render();
       if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
@@ -1739,6 +1977,7 @@
           if (registration.waiting && navigator.serviceWorker.controller) {
             updateAvailable = true;
             updateButton.hidden = false;
+            updateAppActions();
           }
           navigator.serviceWorker.ready.then((readyRegistration) => {
             (navigator.serviceWorker.controller || readyRegistration.active)?.postMessage({ type: "GET_APP_VERSION" });
