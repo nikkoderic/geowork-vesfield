@@ -160,9 +160,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .readout-label { display: block; margin-bottom: 6px; color: #d3def0; font: 12px/1.3 var(--sans); }
 .readout-cell > .readout-label { color: white; font-size: 14px; font-weight: 600; }
 .readout-value { display: block; color: white; font: 17px var(--mono); letter-spacing: -.03em; }
-.readout-value.large { color: #73e4f8; font-size: 27px; }
-#current-distance { font-size: 30px; }
-.position-reading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; color: white; font: clamp(13px, 4vw, 16px) var(--mono); letter-spacing: -.03em; }
+.readout-value.large, .position-reading { color: #73e4f8; }
+.readout-value.large { font-size: 30px; }
+.position-reading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font: clamp(13px, 4vw, 16px) var(--mono); letter-spacing: -.03em; }
 .position-value, .position-accuracy { color: inherit; font: inherit; letter-spacing: inherit; }
 .position-value { overflow-wrap: anywhere; }
 .position-accuracy { white-space: nowrap; }
@@ -301,8 +301,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 }
 @media (max-width: 430px) {
   .connection-status { gap: 6px; }
-  .readout-value.large { font-size: 24px; }
-  #current-distance { font-size: 28px; }
+  .readout-value.large { font-size: 28px; }
   .survey-header { flex-direction: column; }
   .survey-actions { max-width: none; justify-content: flex-start; }
 }
