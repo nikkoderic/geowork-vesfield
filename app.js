@@ -18,6 +18,7 @@
   let activeSiteId = null;
   let activeStationId = null;
   let showingBrowse = false;
+  let acquisitionSelection = null;
   const collapsedSiteIds = new Set();
   let activeTarget = "A";
   let projectSiteSelectorOpen = false;
@@ -75,12 +76,12 @@
     }
   }
 
-  function saveSelection() {
-    const selection = JSON.stringify({ projectId: activeProjectId, siteId: activeSiteId, stationId: activeStationId });
-    if (selection === lastSavedSelection) return;
+  function saveSelection(selection = { projectId: activeProjectId, siteId: activeSiteId, stationId: activeStationId }) {
+    const saved = JSON.stringify({ projectId: selection.projectId, siteId: selection.siteId, stationId: selection.stationId });
+    if (saved === lastSavedSelection) return;
     try {
-      localStorage.setItem(SELECTION_KEY, selection);
-      lastSavedSelection = selection;
+      localStorage.setItem(SELECTION_KEY, saved);
+      lastSavedSelection = saved;
       selectionSaveErrorShown = false;
     } catch (error) {
       if (!selectionSaveErrorShown) showToast(`Could not save the selection: ${error.message}`, true);
@@ -322,7 +323,17 @@
     } else if (!selectedStation()) {
       activeStationId = null;
     }
-    saveSelection();
+    if (showingBrowse && acquisitionSelection) {
+      const savedProject = projects.find((item) => item.id === acquisitionSelection.projectId);
+      const savedSite = savedProject?.sites.find((item) => item.id === acquisitionSelection.siteId);
+      const savedStation = savedSite?.stations.find((item) => item.id === acquisitionSelection.stationId);
+      acquisitionSelection.projectId = savedProject?.id || null;
+      acquisitionSelection.siteId = savedSite?.id || null;
+      acquisitionSelection.stationId = savedStation?.id || null;
+      saveSelection(acquisitionSelection);
+    } else {
+      saveSelection();
+    }
     if (showingBrowse && !project) {
       stopLocationWatch();
       stopCompassWatch();
@@ -557,20 +568,27 @@
     const targetsDiffer = existingStation &&
       (normalizeAzimuth(existingStation.targets.A) !== payload.station.targets.A ||
         normalizeAzimuth(existingStation.targets.B) !== payload.station.targets.B);
-    if (coordinatesDiffer || targetsDiffer) {
-      const changes = [];
-      if (coordinatesDiffer) changes.push(`Replace the saved station location ${formatCoord(existingStation.midpoint.lat)}, ${formatCoord(existingStation.midpoint.lon)} with ${formatCoord(incomingMidpoint.lat)}, ${formatCoord(incomingMidpoint.lon)}.`);
-      if (targetsDiffer) changes.push(`Replace target azimuths A ${normalizeAzimuth(existingStation.targets.A).toFixed(1)}° / B ${normalizeAzimuth(existingStation.targets.B).toFixed(1)}° with A ${payload.station.targets.A.toFixed(1)}° / B ${payload.station.targets.B.toFixed(1)}°.`);
-      const confirmed = await openModal({
-        title: "Replace station setup from QR?",
-        description: changes.join(" "),
-        fields: [],
-        submitLabel: "Replace station setup"
-      });
-      if (!confirmed) {
-        showToast("Station link canceled. Existing station setup was kept.");
-        return;
-      }
+    const changes = [];
+    if (coordinatesDiffer) changes.push(`Replace station coordinates ${formatCoord(existingStation.midpoint.lat)}, ${formatCoord(existingStation.midpoint.lon)} with ${formatCoord(incomingMidpoint.lat)}, ${formatCoord(incomingMidpoint.lon)}.`);
+    else if (existingStation && !existingStation.midpoint) changes.push(`Set station coordinates to ${formatCoord(incomingMidpoint.lat)}, ${formatCoord(incomingMidpoint.lon)}.`);
+    if (targetsDiffer) changes.push(`Replace target azimuths A ${normalizeAzimuth(existingStation.targets.A).toFixed(1)}° / B ${normalizeAzimuth(existingStation.targets.B).toFixed(1)}° with A ${payload.station.targets.A.toFixed(1)}° / B ${payload.station.targets.B.toFixed(1)}°.`);
+    const identity = (item) => item ? `${item.name} (UID: ${item.id})` : "None";
+    const nextIdentity = (existing, incoming) => `${identity(existing || incoming)}${existing ? "" : " · New"}`;
+    const confirmed = await openModal({
+      title: "Confirm station from QR",
+      description: changes.join(" "),
+      details: [
+        { label: "Project", current: identity(selectedProject()), next: nextIdentity(existingProject, payload.project) },
+        { label: "Site", current: identity(selectedSite()), next: nextIdentity(existingSite, payload.site) },
+        { label: "Station", current: identity(selectedStation()), next: nextIdentity(existingStation, payload.station) },
+        { label: "Target", current: selectedStation() ? activeTarget : "None", next: payload.sourceTarget === "A" ? "B" : "A" }
+      ],
+      fields: [],
+      submitLabel: "Confirm"
+    });
+    if (!confirmed) {
+      showToast("Station link canceled.");
+      return;
     }
     let project = projects.find((item) => item.id === payload.project.id);
     if (!project) {
@@ -827,15 +845,10 @@
         <small class="selector-uid">UID · ${uid ? escapeHtml(uid) : "—"}</small></label>
       <button class="button button-outline selector-add selector-add-text" data-action="${createAction}" aria-label="Create new ${createLabel.toLowerCase()}" ${disabled ? "disabled" : ""}>Create New</button>
     </div>`;
-    const shortUid = (id) => escapeHtml(id.length > 8 ? `${id.slice(0, 8)}…` : id);
     const stationRow = selectorRow("STATION", "station", stationOptions, "quick-new-station", "Station", station?.id);
     const captureSelector = captureView ? `<details class="acquisition-selector" data-disclosure="project-site-selector" ${!project || !site || projectSiteSelectorOpen ? "open" : ""}>
         <summary class="acquisition-selector-summary">
-          <span><strong>${project && site ? `${escapeHtml(project.name)} / ${escapeHtml(site.name)}` : "Choose project and site"}</strong>
-            ${project || site ? `<small class="compact-uids">
-              ${project ? `<span title="Project UID · ${escapeHtml(project.id)}" aria-label="Project UID ${escapeHtml(project.id)}">P · ${shortUid(project.id)}</span>` : ""}
-              ${site ? `<span title="Site UID · ${escapeHtml(site.id)}" aria-label="Site UID ${escapeHtml(site.id)}">S · ${shortUid(site.id)}</span>` : ""}
-            </small>` : ""}</span>
+          <span><strong>${project && site ? `${escapeHtml(project.name)} / ${escapeHtml(site.name)}` : "Choose project and site"}</strong></span>
           <span class="disclosure-action">${project && site ? "Change" : "Select"}</span>
         </summary>
         <div class="selector-grid">
@@ -846,7 +859,7 @@
       ${project && site ? `<section class="acquisition-station" aria-label="Station">
         ${station ? `<div class="active-station">
             <details class="station-selector" data-disclosure="station-selector" ${stationSelectorOpen ? "open" : ""}>
-              <summary class="acquisition-selector-summary"><span><strong>${escapeHtml(station.name)}</strong><small>UID · ${escapeHtml(station.id)}</small></span><span class="disclosure-action">Change</span></summary>
+              <summary class="acquisition-selector-summary"><span><strong>${escapeHtml(station.name)}</strong></span><span class="disclosure-action">Change</span></summary>
               ${stationRow}
               <div class="coordinate-row"><span>Coordinates</span><span>${stationCoordinatesText}</span></div>
               <div class="coordinate-row"><span>GPS accuracy</span><span>${stationCoordinates?.accuracy == null ? "—" : `${stationCoordinates.accuracy.toFixed(1)} m`}</span></div>
@@ -856,7 +869,7 @@
             <button class="button button-outline finish-station" data-action="finish-station" ${gpsOperation ? "disabled" : ""}>Finish</button>
           </div>`
           : site.stations.length ? stationRow
-          : `<button class="button button-primary add-first-station" data-action="quick-new-station" aria-label="Create new station">Create New</button>`}
+          : `<button class="button button-primary add-first-station" data-action="quick-new-station" aria-label="Create new station">Create New Station</button>`}
       </section>` : ""}` : backButton(`Back to ${project.name}`, "back");
     app.innerHTML = `${captureView ? `<div class="acquisition-topline">
         <button class="back-button" data-action="browse"><span aria-hidden="true">☷</span> Browse records</button>
@@ -870,23 +883,24 @@
         <div><h2 id="station-setup-title">Station coordinates needed</h2><p>Set coordinates to record points.</p></div>
         <button class="button button-primary" data-action="edit-station">Station setup</button>
       </section>` : ""}
-      <section class="survey-layout ${station ? "" : "position-layout"}">
+      <section class="survey-layout">
         <div class="readout-panel">
-          <div class="readout-top"><h1>${station ? "Live readings" : "Current position"}</h1><span class="gps-state waiting" id="gps-state"><span class="status-dot"></span><span id="gps-state-label">Finding GPS…</span></span></div>
-          <div class="readout-grid ${station ? "" : "position-only"}">
-            ${station ? `<div class="readout-cell"><span class="readout-label">Distance from station</span><span class="readout-value large" id="current-distance">—</span></div>
-              <div class="readout-cell"><span class="readout-label">Current azimuth</span><span class="readout-value large" id="current-azimuth">—</span><span class="readout-comparison" id="current-target-angle">To target ${activeTarget} · —</span></div>
-              <div class="readout-cell"><span class="readout-label">Target azimuth · <span id="target-label">${activeTarget}</span></span><span class="readout-value" id="target-azimuth">${normalizeAzimuth(targetValue).toFixed(1)}°</span></div>` : ""}
-            <div class="readout-cell"><span class="readout-label">Current position</span><span class="readout-value position-value" id="current-position">—</span></div>
-            ${station ? "" : `<div class="readout-cell"><span class="readout-label">GPS accuracy</span><span class="readout-value" id="gps-accuracy">—</span></div>`}
-          </div>
-          <div class="readout-hint"><span id="gps-hint"></span><button id="gps-retry" class="button button-quiet button-small" data-action="retry-location" hidden>Retry GPS</button></div>
-          <div id="gps-operation-status" class="gps-operation-status" role="status" aria-live="polite" hidden></div>
+          <h1 class="visually-hidden">${station ? "Live readings" : "Current position"}</h1>
           ${station ? `<div class="target-selectors" aria-label="Target">
               <button class="target-chip target-chip-a ${activeTarget === "A" ? "active" : ""}" data-action="select-target" data-target="A" aria-pressed="${activeTarget === "A"}">Target A</button>
               <button class="target-chip target-chip-b ${activeTarget === "B" ? "active" : ""}" data-action="select-target" data-target="B" aria-pressed="${activeTarget === "B"}">Target B</button>
-            </div>
-            <button class="button button-accent button-target-${activeTarget.toLowerCase()} capture-button" id="capture-button" data-action="capture-point" disabled>◎ &nbsp; Record point for ${activeTarget}</button>`
+            </div>` : ""}
+          <div class="readout-grid">
+            <div class="readout-cell"><span class="readout-label">Current position</span><div class="position-reading"><span class="readout-value position-value" id="current-position">—</span><span class="position-accuracy" id="gps-accuracy" hidden></span></div></div>
+            ${station ? `<div class="readout-cell"><span class="readout-label">Distance from station</span><span class="readout-value large" id="current-distance">—</span></div>
+              <div class="readout-cell"><span class="readout-label">Azimuth</span><div class="azimuth-readings">
+                <div><span class="readout-label">Current</span><span class="readout-value large" id="current-azimuth">—</span></div>
+                <div><span class="readout-label">Target ${activeTarget}</span><span class="readout-value large" id="target-azimuth">${normalizeAzimuth(targetValue).toFixed(1)}°</span></div>
+              </div></div>` : ""}
+          </div>
+          <div class="readout-hint" id="gps-warning" role="status" hidden><span id="gps-hint"></span><button id="gps-retry" class="button button-quiet button-small" data-action="retry-location" hidden>Retry GPS</button></div>
+          <div id="gps-operation-status" class="gps-operation-status" role="status" aria-live="polite" hidden></div>
+          ${station ? `<button class="button button-accent button-target-${activeTarget.toLowerCase()} capture-button" id="capture-button" data-action="capture-point" disabled>◎ &nbsp; Record point for ${activeTarget}</button>`
             : ""}
         </div>
         ${station ? `<aside class="side-panel">
@@ -1077,85 +1091,68 @@
     const compassStatus = document.getElementById("compass-status");
     compassStatus.textContent = compassHeading !== null
       ? `${compassHeadingAbsolute ? "Compass" : "Heading ~"} ${compassHeading.toFixed(0)}°`
-      : compassError || (compassNeedsPermission ? "Enable compass" : compassListening ? "Waiting for heading…" : "Compass unavailable");
+      : compassError || (compassNeedsPermission ? "" : compassListening ? "Waiting for heading…" : "Compass unavailable");
     document.getElementById("compass-enable").hidden = compassHeading !== null || !compassNeedsPermission;
   }
 
   function updateLiveReadout(errorMessage = locationError) {
     const positionEl = document.getElementById("current-position");
     if (!positionEl) return;
-    const label = document.getElementById("gps-state-label");
-    const status = document.getElementById("gps-state");
     const hint = document.getElementById("gps-hint");
+    const warning = document.getElementById("gps-warning");
+    const accuracy = document.getElementById("gps-accuracy");
     const capture = document.getElementById("capture-button");
     const retry = document.getElementById("gps-retry");
     const station = selectedStation();
     if (errorMessage) {
       positionEl.textContent = "Unavailable";
-      label.textContent = "GPS unavailable";
-      status.classList.add("waiting");
       hint.textContent = errorMessage;
+      warning.hidden = false;
       retry.hidden = !navigator.geolocation;
       if (capture) capture.disabled = Boolean(gpsOperation) || !station?.midpoint;
-      const accuracy = document.getElementById("gps-accuracy");
-      if (accuracy) accuracy.textContent = "—";
+      accuracy.hidden = true;
       const distance = document.getElementById("current-distance");
       const azimuth = document.getElementById("current-azimuth");
       if (distance) distance.textContent = "—";
       if (azimuth) azimuth.textContent = "—";
-      const targetAngle = document.getElementById("current-target-angle");
-      if (targetAngle) targetAngle.textContent = `To target ${activeTarget} · —`;
       updateFieldMap();
       return;
     }
     if (!currentPosition) {
       positionEl.textContent = "Waiting for signal";
-      label.textContent = "Finding GPS…";
-      status.classList.add("waiting");
-      hint.textContent = station?.midpoint ? "Recording will request a GPS fix." : station ? "Set station coordinates to record." : "";
+      hint.textContent = "";
+      warning.hidden = true;
       retry.hidden = true;
       if (capture) capture.disabled = Boolean(gpsOperation) || !station?.midpoint;
-      const accuracy = document.getElementById("gps-accuracy");
-      if (accuracy) accuracy.textContent = "—";
+      accuracy.hidden = true;
       if (station) {
         document.getElementById("current-distance").textContent = "—";
         document.getElementById("current-azimuth").textContent = "—";
-        document.getElementById("current-target-angle").textContent = `To target ${activeTarget} · —`;
       }
       updateFieldMap();
       return;
     }
     positionEl.textContent = `${formatCoord(currentPosition.lat)}, ${formatCoord(currentPosition.lon)}`;
-    label.textContent = `GPS ±${Math.round(currentPosition.accuracy)} m`;
-    status.classList.remove("waiting");
+    accuracy.textContent = `±${currentPosition.accuracy.toFixed(1)} m`;
+    accuracy.hidden = false;
+    warning.hidden = true;
     retry.hidden = true;
-    hint.textContent = station?.midpoint
-      ? `Updated ${new Date(currentPosition.capturedAt).toLocaleTimeString()}.`
-      : station
-        ? "Set station coordinates."
-        : "";
+    hint.textContent = "";
     if (capture) capture.disabled = Boolean(gpsOperation) || !station?.midpoint;
-    const accuracy = document.getElementById("gps-accuracy");
-    if (accuracy) accuracy.textContent = `±${currentPosition.accuracy.toFixed(1)} m`;
     const measure = station?.midpoint ? distanceAndBearing(station.midpoint, currentPosition) : null;
     const distance = document.getElementById("current-distance");
     const azimuth = document.getElementById("current-azimuth");
     if (distance) distance.textContent = measure ? `${measure.distance.toFixed(1)} m` : "—";
     if (azimuth) azimuth.textContent = measure ? `${measure.bearing.toFixed(1)}°` : "—";
-    const targetAngle = document.getElementById("current-target-angle");
-    if (targetAngle) {
-      targetAngle.textContent = measure
-        ? `To target ${activeTarget} · ${smallestAzimuthDifference(measure.bearing, station.targets[activeTarget]).toFixed(1)}°`
-        : `To target ${activeTarget} · —`;
-    }
     updateFieldMap();
   }
 
-  function openModal({ title, description = "", fields, submitLabel = "Save", danger = false }) {
+  function openModal({ title, description = "", details = [], fields, submitLabel = "Save", danger = false }) {
     const backdrop = document.createElement("div");
     backdrop.className = "modal-backdrop";
-    backdrop.innerHTML = `<form class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    backdrop.innerHTML = `<form class="modal ${details.length ? "qr-confirm-modal" : ""}" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <h2 id="modal-title">${escapeHtml(title)}</h2>${description ? `<p>${escapeHtml(description)}</p>` : ""}
+      ${details.length ? `<div class="qr-confirm-details">${details.map((item) => `<div class="qr-confirm-row"><strong>${escapeHtml(item.label)}</strong><span>Current: ${escapeHtml(item.current)}</span><span>After scan: ${escapeHtml(item.next)}</span></div>`).join("")}</div>` : ""}
       ${fields.map((field) => field.type === "checkbox"
         ? `<div class="field field-checkbox"><label><input name="${escapeHtml(field.name)}" type="checkbox" ${field.checked ? "checked" : ""}> <span>${escapeHtml(field.label)}</span></label></div>`
         : `<div class="field"><label for="field-${escapeHtml(field.name)}">${escapeHtml(field.label)}</label>
@@ -1796,9 +1793,31 @@
     const action = target.dataset.action;
     try {
       if (action === "new-project") await createProject();
-      else if (action === "browse") { showingBrowse = true; pauseFieldSensors(); renderProjects(); }
-      else if (action === "capture-home") { showingBrowse = false; render(); }
-      else if (action === "acquire-points") { showingBrowse = false; activeTarget = "A"; render(); }
+      else if (action === "browse") {
+        acquisitionSelection = { projectId: activeProjectId, siteId: activeSiteId, stationId: activeStationId, target: activeTarget };
+        showingBrowse = true;
+        pauseFieldSensors();
+        renderProjects();
+      }
+      else if (action === "capture-home") {
+        if (acquisitionSelection) {
+          activeProjectId = acquisitionSelection.projectId;
+          activeSiteId = acquisitionSelection.siteId;
+          activeStationId = acquisitionSelection.stationId;
+          activeTarget = acquisitionSelection.target;
+          acquisitionSelection = null;
+        }
+        showingBrowse = false;
+        render();
+      }
+      else if (action === "acquire-points") {
+        const sameStation = acquisitionSelection && acquisitionSelection.projectId === activeProjectId &&
+          acquisitionSelection.siteId === activeSiteId && acquisitionSelection.stationId === activeStationId;
+        activeTarget = sameStation ? acquisitionSelection.target : "A";
+        acquisitionSelection = null;
+        showingBrowse = false;
+        render();
+      }
       else if (action === "share-station-qr") showStationQr();
       else if (action === "scan-station-qr") await scanStationQr();
       else if (action === "home") { showingBrowse = true; activeProjectId = null; activeSiteId = null; activeStationId = null; render(); }
@@ -1832,7 +1851,7 @@
         else collapsedSiteIds.add(target.dataset.id);
         renderProject(selectedProject());
       }
-      else if (action === "open-station") { showingBrowse = true; activeSiteId = target.dataset.siteId; activeStationId = target.dataset.id; activeTarget = "A"; render(); }
+      else if (action === "open-station") { showingBrowse = true; activeSiteId = target.dataset.siteId; activeStationId = target.dataset.id; render(); }
       else if (action === "select-target") {
         activeTarget = target.dataset.target;
         renderSurvey(selectedProject(), selectedSite(), selectedStation());
