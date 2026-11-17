@@ -1697,7 +1697,7 @@
         const file = new File([content], name, { type });
         if (navigator.canShare && !navigator.canShare({ files: [file] })) continue;
         try {
-          await navigator.share({ title: `VES Field — ${project.name}`, text: `Project ID: ${project.id}`, files: [file] });
+          await navigator.share({ files: [file] });
           showToast("Project shared. Import the file on the other device to merge.");
           return;
         } catch (error) {
@@ -1705,13 +1705,13 @@
             showToast("Sharing cancelled. Your project was not changed.");
             return;
           }
-          lastError = error;
+          lastError ||= error;
         }
       }
       try {
         downloadBackup();
         showToast(lastError
-          ? `Sharing was blocked (${lastError.message || "permission denied"}). Project file downloaded instead.`
+          ? `Sharing was blocked (${lastError.name}: ${lastError.message || "permission denied"}). Project file downloaded instead.`
           : "File sharing is not supported here. Project file downloaded instead.");
       } catch (downloadError) {
         showToast(`Sharing failed${lastError ? `: ${lastError.message}` : ""}. Download also failed: ${downloadError.message}.`, true);
