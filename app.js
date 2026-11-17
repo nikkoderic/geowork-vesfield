@@ -1689,26 +1689,32 @@
     const content = exportProjectJson(project);
     const downloadBackup = () => downloadFile(fileName, content, "application/json");
     if (navigator.share && typeof File !== "undefined") {
-      try {
-        const file = new File([content], fileName, { type: "application/json" });
-        if (navigator.canShare && !navigator.canShare({ files: [file] })) {
-          downloadBackup();
-          showToast("File sharing is not supported here. Project file downloaded instead.");
-          return;
-        }
-        await navigator.share({ title: `VES Field — ${project.name}`, text: `Project ID: ${project.id}`, files: [file] });
-        showToast("Project shared. Import the file on the other device to merge.");
-      } catch (error) {
-        if (error.name === "AbortError") {
-          showToast("Sharing cancelled. Your project was not changed.");
-          return;
-        }
+      // Some browsers reject application/json shares with NotAllowedError, so retry as plain text.
+      // Chrome only allows a short list of file types; .txt is permitted and still imports.
+      const variants = [[fileName, "application/json"], [fileName, "text/plain"], [`${fileName}.txt`, "text/plain"]];
+      let lastError;
+      for (const [name, type] of variants) {
+        const file = new File([content], name, { type });
+        if (navigator.canShare && !navigator.canShare({ files: [file] })) continue;
         try {
-          downloadBackup();
-          showToast(`Sharing was blocked (${error.message || "permission denied"}). Project file downloaded instead.`);
-        } catch (downloadError) {
-          showToast(`Sharing failed: ${error.message}. Download also failed: ${downloadError.message}.`, true);
+          await navigator.share({ title: `VES Field — ${project.name}`, text: `Project ID: ${project.id}`, files: [file] });
+          showToast("Project shared. Import the file on the other device to merge.");
+          return;
+        } catch (error) {
+          if (error.name === "AbortError") {
+            showToast("Sharing cancelled. Your project was not changed.");
+            return;
+          }
+          lastError = error;
         }
+      }
+      try {
+        downloadBackup();
+        showToast(lastError
+          ? `Sharing was blocked (${lastError.message || "permission denied"}). Project file downloaded instead.`
+          : "File sharing is not supported here. Project file downloaded instead.");
+      } catch (downloadError) {
+        showToast(`Sharing failed${lastError ? `: ${lastError.message}` : ""}. Download also failed: ${downloadError.message}.`, true);
       }
       return;
     }
