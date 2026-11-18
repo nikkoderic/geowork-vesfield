@@ -8,7 +8,7 @@ In the repository settings, open **Pages**, choose **Deploy from a branch**, the
 
 On Android, use the browser's **Install app** prompt or **Add to Home screen**. On iPhone, use Safari's **Share → Add to Home Screen**.
 
-The app name, connection status, and running version are shown at the bottom of the screen. After publishing a new version to GitHub Pages, the browser checks for it and **Update app** appears at the top when the new service worker takes control. Tap it to reload the updated app. The button cannot publish source changes that have not yet been deployed. If there is no connection, the installed version remains available offline and no update can be detected until the app reconnects.
+The app name, connection status, and running version are shown at the bottom of the screen. Install and update banners appear at the top when available; dismissing one hides it for the current app session. After publishing a new version to GitHub Pages, the browser checks for it and an update banner appears when the new service worker takes control. Tap **Update** to reload the updated app. The button cannot publish source changes that have not yet been deployed. If there is no connection, the installed version remains available offline and no update can be detected until the app reconnects.
 
 ## Working with projects
 

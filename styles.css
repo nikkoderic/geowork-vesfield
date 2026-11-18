@@ -28,10 +28,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   outline-offset: 3px;
 }
 .app-shell { min-height: 100vh; display: flex; flex-direction: column; }
-.app-actions { width: min(1160px, calc(100% - 48px)); margin: 12px auto 0; display: flex; justify-content: flex-end; gap: 8px; }
+.app-actions { width: min(1160px, calc(100% - 48px)); margin: 12px auto 0; display: grid; gap: 8px; }
+.app-banner { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 14px; border: 1px solid #c8d6f7; border-radius: 9px; background: #eaf1ff; color: var(--ink); font-size: 13px; font-weight: 600; }
+.app-banner > span { flex: 1; min-width: 0; }
+.banner-dismiss { width: 44px; height: 44px; flex: 0 0 44px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--ink); cursor: pointer; font-size: 22px; }
 .brand { color: var(--green); text-decoration: none; font-weight: 700; letter-spacing: .1em; font-size: 12px; }
 .update-button, .install-button { min-height: 44px; padding: 0 12px; font-size: 12px; }
-.update-button:disabled { cursor: wait; opacity: .7; }
+.update-button:disabled, .install-button:disabled { cursor: wait; opacity: .7; }
 .connection-status { display: inline-flex; gap: 8px; align-items: center; color: #505e70; font: 12px var(--sans); }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 0 3px #00bfe820; }
 .connection-status.is-offline .status-dot { background: #e53935; box-shadow: 0 0 0 3px #e5393520; }

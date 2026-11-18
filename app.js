@@ -9,9 +9,13 @@
   const fileInput = document.getElementById("import-file");
   const installButton = document.getElementById("install-button");
   const updateButton = document.getElementById("update-button");
+  const installBanner = document.getElementById("install-banner");
+  const updateBanner = document.getElementById("update-banner");
   const appActions = document.getElementById("app-actions");
   let serviceWorkerControlsPage = Boolean(navigator.serviceWorker?.controller);
   let updateAvailable = false;
+  let updateDismissed = false;
+  let installDismissed = false;
   let db;
   let projects = [];
   let activeProjectId = null;
@@ -2016,7 +2020,6 @@
     if (!controller) return;
     if (serviceWorkerControlsPage) {
       updateAvailable = true;
-      updateButton.hidden = false;
       updateAppActions();
     } else {
       serviceWorkerControlsPage = true;
@@ -2034,21 +2037,41 @@
   }
 
   function updateAppActions() {
-    appActions.hidden = updateButton.hidden && installButton.hidden;
+    updateBanner.hidden = !updateAvailable || updateDismissed;
+    installBanner.hidden = !deferredInstallPrompt || installDismissed;
+    appActions.hidden = updateBanner.hidden && installBanner.hidden;
   }
 
+  document.getElementById("dismiss-update").addEventListener("click", () => {
+    updateDismissed = true;
+    updateAppActions();
+  });
+  document.getElementById("dismiss-install").addEventListener("click", () => {
+    installDismissed = true;
+    updateAppActions();
+  });
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     deferredInstallPrompt = event;
-    installButton.hidden = false;
     updateAppActions();
   });
   installButton.addEventListener("click", async () => {
     if (!deferredInstallPrompt) return;
-    deferredInstallPrompt.prompt();
-    await deferredInstallPrompt.userChoice;
+    const prompt = deferredInstallPrompt;
+    installButton.disabled = true;
+    try {
+      await prompt.prompt();
+      await prompt.userChoice;
+    } catch (error) {
+      showToast(`Could not install app: ${error.message}`, true);
+    } finally {
+      if (deferredInstallPrompt === prompt) deferredInstallPrompt = null;
+      installButton.disabled = false;
+      updateAppActions();
+    }
+  });
+  window.addEventListener("appinstalled", () => {
     deferredInstallPrompt = null;
-    installButton.hidden = true;
     updateAppActions();
   });
 
@@ -2063,6 +2086,8 @@
     try {
       updateApp();
     } catch (error) {
+      updateButton.disabled = false;
+      updateButton.textContent = "Update";
       showToast(`App update failed: ${error.message}`, true);
     }
   });
@@ -2080,7 +2105,6 @@
         navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then((registration) => {
           if (registration.waiting && navigator.serviceWorker.controller) {
             updateAvailable = true;
-            updateButton.hidden = false;
             updateAppActions();
           }
           navigator.serviceWorker.ready.then((readyRegistration) => {

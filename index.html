@@ -15,9 +15,17 @@
   </head>
   <body>
     <div class="app-shell">
-      <div id="app-actions" class="app-actions" hidden>
-        <button id="update-button" class="button button-outline update-button" type="button" hidden>↻ Update app</button>
-        <button id="install-button" class="button button-outline install-button" type="button" hidden>Install app</button>
+      <div id="app-actions" class="app-actions" aria-live="polite" hidden>
+        <div id="update-banner" class="app-banner" hidden>
+          <span>Update available</span>
+          <button id="update-button" class="button button-primary update-button" type="button">Update</button>
+          <button id="dismiss-update" class="banner-dismiss" type="button" aria-label="Dismiss update notification">×</button>
+        </div>
+        <div id="install-banner" class="app-banner" hidden>
+          <span>Install VES Field</span>
+          <button id="install-button" class="button button-primary install-button" type="button">Install</button>
+          <button id="dismiss-install" class="banner-dismiss" type="button" aria-label="Dismiss install notification">×</button>
+        </div>
       </div>
       <main id="app" class="main-content" aria-live="polite"></main>
       <footer class="app-footer">
