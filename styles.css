@@ -273,6 +273,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .field label { font: 10px var(--mono); color: var(--muted); letter-spacing: .04em; }
 .field input { min-height: 42px; width: 100%; padding: 0 11px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: white; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.share-fallback-actions { display: grid; gap: 8px; }
+.share-fallback-actions .button:disabled { cursor: not-allowed; opacity: .5; transform: none; }
 .toast-region { position: fixed; bottom: 22px; left: 50%; z-index: 10; transform: translateX(-50%); display: grid; gap: 8px; width: min(430px, calc(100% - 32px)); pointer-events: none; }
 .toast { padding: 12px 15px; color: white; background: var(--green); border-radius: 8px; box-shadow: 0 5px 20px #0002; font-size: 12px; }
 .toast.error { background: #8f3e34; }

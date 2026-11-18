@@ -26,9 +26,9 @@ To conserve power, live GPS and compass updates stop while browsing records or w
 
 Map colors distinguish the station (green), current position (black), target A (cyan), and target B (magenta with a dashed direction line).
 
-Use **Export CSV** to download a project-wide table with rows for every station, station coordinates, and recorded point; the default filename is the project name with a `.csv` extension. **Share / sync** sends a versioned project JSON file using the phone's share sheet where supported; otherwise it downloads the file. The default filename is the project name with a `.vesfield.json` extension. Import that file on another device to merge records with the same project ID. This is an offline file-transfer workflow, not live synchronization.
+Use **Export CSV** to download a project-wide table with rows for every station, station coordinates, and recorded point; the default filename is the project name with a `.csv` extension. **Share / sync** sends a versioned project JSON file using the phone's share sheet where supported. If JSON sharing is blocked, choose **Share as text file** or **Download JSON**. The `.vesfield.txt` file contains the same project data as the `.vesfield.json` backup. Import either file on another device to merge records with the same project ID; update the receiving app to select text files. This is an offline file-transfer workflow, not live synchronization.
 
-Project, station, and individual recorded-point deletion each require confirmation before removing local data. If the system share sheet denies access or sharing is unavailable, the app automatically downloads the project file instead.
+Project, station, and individual recorded-point deletion each require confirmation before removing local data.
 
 ### Bluetooth limitation
 
