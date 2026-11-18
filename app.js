@@ -1683,17 +1683,73 @@
     return JSON.stringify({ format: EXPORT_FORMAT, version: 1, exportedAt: now(), project }, null, 2);
   }
 
+  function showShareFallback(project, content, reason) {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `<section class="modal" role="dialog" aria-modal="true" aria-labelledby="share-fallback-title">
+      <h2 id="share-fallback-title">Could not share JSON</h2>
+      <p class="share-fallback-status" role="status"></p>
+      <div class="share-fallback-actions">
+        <button class="button button-primary" type="button" data-action="share-text">Share as text file</button>
+        <button class="button button-outline" type="button" data-action="download-json">Download JSON</button>
+        <button class="button button-outline" type="button" data-action="close-modal">Cancel</button>
+      </div>
+    </section>`;
+    document.body.append(backdrop);
+    const status = backdrop.querySelector(".share-fallback-status");
+    const shareButton = backdrop.querySelector('[data-action="share-text"]');
+    const downloadButton = backdrop.querySelector('[data-action="download-json"]');
+    const closeButton = backdrop.querySelector('[data-action="close-modal"]');
+    status.textContent = `${reason} The text file contains the same project data.`;
+    shareButton.disabled = !navigator.share || typeof File === "undefined";
+    (shareButton.disabled ? downloadButton : shareButton).focus();
+
+    closeButton.addEventListener("click", () => backdrop.remove());
+    downloadButton.addEventListener("click", () => {
+      try {
+        downloadFile(`${safeFilename(project.name)}.vesfield.json`, content, "application/json");
+        backdrop.remove();
+        showToast("Project file downloaded.");
+      } catch (error) {
+        status.textContent = `Download failed: ${error.message || error.name}.`;
+      }
+    });
+    shareButton.addEventListener("click", async () => {
+      try {
+        const file = new File([content], `${safeFilename(project.name)}.vesfield.txt`, { type: "text/plain" });
+        if (navigator.canShare && !navigator.canShare({ files: [file] })) {
+          status.textContent = "Text file sharing is not supported. Download the JSON file instead.";
+          return;
+        }
+        shareButton.disabled = true;
+        downloadButton.disabled = true;
+        await navigator.share({ title: `VES Field — ${project.name}`, text: `Project ID: ${project.id}`, files: [file] });
+        if (!backdrop.isConnected) return;
+        backdrop.remove();
+        showToast("Project shared. Import the file on the other device to merge.");
+      } catch (error) {
+        if (!backdrop.isConnected) return;
+        status.textContent = error.name === "AbortError"
+          ? "Sharing cancelled. Choose an option to continue."
+          : `Text file sharing failed: ${error.message || error.name}. Download the JSON file or try again.`;
+      } finally {
+        if (backdrop.isConnected) {
+          shareButton.disabled = false;
+          downloadButton.disabled = false;
+        }
+      }
+    });
+  }
+
   async function shareProject() {
     const project = selectedProject();
     const fileName = `${safeFilename(project.name)}.vesfield.json`;
     const content = exportProjectJson(project);
-    const downloadBackup = () => downloadFile(fileName, content, "application/json");
     if (navigator.share && typeof File !== "undefined") {
       try {
         const file = new File([content], fileName, { type: "application/json" });
         if (navigator.canShare && !navigator.canShare({ files: [file] })) {
-          downloadBackup();
-          showToast("File sharing is not supported here. Project file downloaded instead.");
+          showShareFallback(project, content, "JSON file sharing is not supported.");
           return;
         }
         await navigator.share({ title: `VES Field — ${project.name}`, text: `Project ID: ${project.id}`, files: [file] });
@@ -1703,17 +1759,11 @@
           showToast("Sharing cancelled. Your project was not changed.");
           return;
         }
-        try {
-          downloadBackup();
-          showToast(`Sharing was blocked (${error.message || "permission denied"}). Project file downloaded instead.`);
-        } catch (downloadError) {
-          showToast(`Sharing failed: ${error.message}. Download also failed: ${downloadError.message}.`, true);
-        }
+        showShareFallback(project, content, `JSON sharing failed: ${error.message || error.name}.`);
       }
       return;
     }
-    downloadBackup();
-    showToast("Project file downloaded. Send it to the other device and import it there.");
+    showShareFallback(project, content, "File sharing is not supported in this browser.");
   }
 
   function mergeProject(incoming) {
